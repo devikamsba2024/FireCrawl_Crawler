@@ -144,8 +144,15 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
             print(f"\n✓ Successfully saved {len(saved_files)} pages to: {config.output_dir}")
             print(f"✓ Metadata saved to: {config.output_dir}/.scrape_metadata.json")
         else:
-            print("\n✗ No pages were scraped")
-            sys.exit(1)
+            status = result.get("status", "unknown")
+            print(f"\n⚠️  Warning: Crawl completed with status '{status}' but no pages found.")
+            print("This might happen if:")
+            print("  - The crawl is still processing (check again later)")
+            print("  - No pages matched the crawl criteria")
+            print("  - The website structure changed")
+            print(f"\nYou can check the crawl status manually or try again later.")
+            logger.warning(f"Crawl completed but no pages found for {section['url']}")
+            # Don't exit with error - allow it to continue (might be temporary)
             
     except Exception as e:
         print(f"\n✗ Error: {str(e)}")

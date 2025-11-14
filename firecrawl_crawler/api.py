@@ -200,8 +200,31 @@ class FirecrawlClient:
             status = status_data.get("status")
             
             if status == "completed":
-                logger.info(f"Crawl job {job_id} completed successfully")
-                return status_data
+                # Check if data is available (sometimes completed but data not ready yet)
+                pages = status_data.get("data", [])
+                if pages:
+                    logger.info(f"Crawl job {job_id} completed successfully with {len(pages)} pages")
+                    return status_data
+                else:
+                    # Status is completed but no data yet - wait a bit more
+                    logger.debug(f"Crawl job {job_id} marked completed but no data yet, waiting...")
+                    print(f"Crawl status: {status} (waiting for data...), waiting...")
+                    time.sleep(poll_interval)
+                    # Give it a few more tries (up to 30 seconds)
+                    retry_count = 0
+                    max_retries = 6  # 6 * 5s = 30 seconds
+                    while retry_count < max_retries and time.time() - start_time < max_wait_time:
+                        status_data = self.get_crawl_status(job_id)
+                        pages = status_data.get("data", [])
+                        if pages:
+                            logger.info(f"Crawl job {job_id} data now available: {len(pages)} pages")
+                            return status_data
+                        retry_count += 1
+                        time.sleep(poll_interval)
+                    
+                    # If still no data after retries, return what we have
+                    logger.warning(f"Crawl job {job_id} completed but no pages found after retries")
+                    return status_data
             elif status == "failed":
                 error_msg = status_data.get("error", "Unknown error")
                 logger.error(f"Crawl job {job_id} failed: {error_msg}")

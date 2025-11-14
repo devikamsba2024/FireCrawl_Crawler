@@ -67,12 +67,28 @@ class MarkdownStorage:
         
         Args:
             url: Page URL
-            filepath: Path to saved file
+            filepath: Path to saved file (can be str or Path)
         """
+        filepath_obj = Path(filepath)
+        
+        # Store path relative to output_dir for portability
+        try:
+            relative_path = filepath_obj.relative_to(self.output_dir)
+            stored_path = str(relative_path)
+        except ValueError:
+            # If not relative to output_dir, store as-is but try to make relative
+            if filepath_obj.is_absolute():
+                try:
+                    stored_path = str(filepath_obj.relative_to(Path.cwd()))
+                except ValueError:
+                    stored_path = str(filepath_obj)
+            else:
+                stored_path = str(filepath_obj)
+        
         self.metadata["pages"][url] = {
-            "file": filepath,
+            "file": stored_path,
             "scraped_at": datetime.now().isoformat(),
-            "file_size": Path(filepath).stat().st_size if Path(filepath).exists() else 0
+            "file_size": filepath_obj.stat().st_size if filepath_obj.exists() else 0
         }
         self.metadata["last_crawl"] = datetime.now().isoformat()
         self._save_metadata()
@@ -191,10 +207,46 @@ class MarkdownStorage:
         # Check if this URL was already scraped (for updates)
         existing_file = None
         if url in self.metadata.get("pages", {}):
-            existing_file = self.metadata["pages"][url].get("file")
-            if existing_file and Path(existing_file).exists():
-                filepath = Path(existing_file)
-                logger.debug(f"Updating existing file for {url}")
+            existing_file_path = self.metadata["pages"][url].get("file")
+            if existing_file_path:
+                # Resolve path - could be absolute, relative to cwd, or relative to output_dir
+                existing_path = Path(existing_file_path)
+                filepath = None
+                
+                if existing_path.is_absolute():
+                    # Absolute path
+                    if existing_path.exists():
+                        filepath = existing_path
+                else:
+                    # Relative path - try multiple locations
+                    # 1. Try relative to output_dir (most common case)
+                    candidate = self.output_dir / existing_path
+                    if candidate.exists():
+                        filepath = candidate
+                    else:
+                        # 2. Try relative to current working directory
+                        candidate = Path.cwd() / existing_path
+                        if candidate.exists():
+                            filepath = candidate
+                        else:
+                            # 3. Try just the filename in output_dir
+                            filename_only = existing_path.name
+                            candidate = self.output_dir / filename_only
+                            if candidate.exists():
+                                filepath = candidate
+                            else:
+                                # 4. If path contains "output/", try resolving from cwd
+                                if "output" in str(existing_path):
+                                    candidate = Path.cwd() / existing_path
+                                    if candidate.exists():
+                                        filepath = candidate
+                
+                if filepath and filepath.exists():
+                    logger.debug(f"Updating existing file for {url}: {filepath}")
+                    existing_file = str(filepath)
+                else:
+                    logger.debug(f"Existing file path not found: {existing_file_path}, will create new file")
+                    existing_file = None
             else:
                 existing_file = None
         
