@@ -111,15 +111,22 @@ def test_scrape_endpoint(api_url: str, api_key: str = None, test_url: str = "htt
         return False
     except FirecrawlTimeoutError as e:
         print(f"✗ Timeout error: {e}")
-        print("\n💡 The scrape request timed out (likely 408 error). This may indicate:")
-        print("  - The page is too slow to load (may need >120 seconds)")
-        print("  - The Firecrawl API is overloaded")
+        print("\n⚠️  IMPORTANT: This is likely a SERVER-SIDE timeout (408 error).")
+        print("  The Firecrawl API server itself has a timeout (likely 60-90 seconds).")
+        print("  Client-side timeouts (120s, 150s, 180s) won't help if server times out first.")
+        print("\n💡 This may indicate:")
+        print("  - The page is too slow to load (>60-90 seconds for server)")
+        print("  - The Firecrawl API server has a fixed timeout we cannot control")
         print("  - Network connectivity issues (especially from VM)")
-        print("  - Try running the test again - it will retry with longer timeouts")
-        print("\n💡 Note: The scrape endpoint now retries automatically with:")
+        print("\n💡 SOLUTIONS:")
+        print("  1. Use CRAWL instead of SCRAPE for slow pages")
+        print("  2. Check Firecrawl server timeout configuration")
+        print("  3. Try a faster/different URL")
+        print("\n💡 Note: The scrape endpoint retries automatically with:")
         print("  - Attempt 1: 120s timeout")
         print("  - Attempt 2: 150s timeout") 
         print("  - Attempt 3: 180s timeout")
+        print("  But server timeout may occur before client timeout.")
         return False
     except FirecrawlAPIError as e:
         error_str = str(e)
@@ -175,8 +182,8 @@ def test_target_website_reachability(target_url: str):
         return False
 
 
-def test_crawl_start(api_url: str, api_key: str = None, test_url: str = "https://example.com"):
-    """Test if crawl endpoint can start a job."""
+def test_crawl_start(api_url: str, api_key: str = None, test_url: str = "https://example.com", max_wait: int = 60):
+    """Test if crawl endpoint can start a job and wait for completion."""
     print("\n" + "="*80)
     print("TEST 5: Crawl Endpoint Test (Starting a crawl)")
     print("="*80)
@@ -199,21 +206,54 @@ def test_crawl_start(api_url: str, api_key: str = None, test_url: str = "https:/
         if job_id:
             print(f"✓ Crawl job started successfully!")
             print(f"  Job ID: {job_id}")
+            print(f"\nWaiting for crawl to complete (max {max_wait}s)...")
+            print("  (This tests the full crawl workflow)")
             
-            # Check status once
-            print("Checking job status...")
-            time.sleep(2)
             try:
-                status_data = client.get_crawl_status(job_id)
-                status = status_data.get("status", "unknown")
-                print(f"  Current status: {status}")
-                pages = status_data.get("data", [])
+                # Wait for completion with timeout
+                result = client.wait_for_crawl(
+                    job_id=job_id,
+                    max_wait_time=max_wait,
+                    poll_interval=3  # Check every 3 seconds for test
+                )
+                
+                status = result.get("status", "unknown")
+                pages = result.get("data", [])
+                total_pages = result.get("total", 0)
+                stats = result.get("stats", {})
+                
+                print(f"\n  Final status: {status}")
+                print(f"  Pages found: {len(pages)}")
+                if total_pages > 0:
+                    print(f"  Total pages reported: {total_pages}")
+                if stats:
+                    print(f"  Stats: {stats}")
+                
                 if pages:
-                    print(f"  Pages found: {len(pages)}")
-                return True
+                    print(f"\n✓ Crawl completed successfully with {len(pages)} page(s)!")
+                    return True
+                else:
+                    print(f"\n⚠️  Crawl completed but no pages in data array")
+                    if total_pages > 0:
+                        print(f"  API reports {total_pages} total pages, but data array is empty")
+                        print(f"  This may be a Firecrawl API timing issue")
+                    print(f"  Full response logged for debugging")
+                    return False
+                    
+            except FirecrawlTimeoutError as e:
+                print(f"\n✗ Crawl timed out after {max_wait}s")
+                print(f"  Error: {e}")
+                print(f"\n💡 This may indicate:")
+                print(f"  - The crawl is taking longer than {max_wait}s")
+                print(f"  - The crawl is stuck in 'scraping' status")
+                print(f"  - Network connectivity issues (especially from VM)")
+                print(f"  - Check job status manually: curl {api_url}/v1/crawl/{job_id}")
+                print(f"  - The job may still be running on the server")
+                return False
             except Exception as e:
-                print(f"  Warning: Could not get status: {e}")
-                print(f"  But job was created, which is good!")
+                print(f"\n⚠️  Warning: Error waiting for crawl: {e}")
+                print(f"  But job was created successfully, which means crawl endpoint works!")
+                print(f"  You can check status manually: curl {api_url}/v1/crawl/{job_id}")
                 return True
         else:
             print("✗ Crawl endpoint did not return job ID")
@@ -222,11 +262,28 @@ def test_crawl_start(api_url: str, api_key: str = None, test_url: str = "https:/
     except FirecrawlConnectionError as e:
         print(f"✗ Connection error: {e}")
         return False
+    except FirecrawlTimeoutError as e:
+        print(f"✗ Timeout error: {e}")
+        print("\n💡 The crawl request timed out. This may indicate:")
+        print("  - Network connectivity issues (especially from VM)")
+        print("  - Firecrawl API server is slow or overloaded")
+        print("  - Check if API is accessible: curl {api_url}/health")
+        return False
     except FirecrawlAPIError as e:
-        print(f"✗ API error: {e}")
+        error_str = str(e)
+        if "408" in error_str or "Request timeout" in error_str:
+            print(f"✗ API timeout error (408): {e}")
+            print("\n💡 This is a server-side timeout issue.")
+            print("  The Firecrawl API server itself is timing out (60-90s limit).")
+            print("  This is not a client-side issue - the server has a fixed timeout.")
+        else:
+            print(f"✗ API error: {e}")
         return False
     except Exception as e:
-        print(f"✗ Unexpected error: {e}")
+        print(f"✗ Unexpected error: {type(e).__name__}: {e}")
+        import traceback
+        print("\n💡 Full error details:")
+        traceback.print_exc()
         return False
 
 
@@ -247,6 +304,9 @@ Examples:
   
   # Test all with custom API and target
   python3 test_connection.py --api-url http://192.168.1.100:3002 --target-url https://www.wichita.edu
+  
+  # Test with longer crawl wait time
+  python3 test_connection.py --crawl-wait-time 120
         """
     )
     
@@ -280,6 +340,12 @@ Examples:
         action="store_true",
         help="Skip target website reachability test"
     )
+    parser.add_argument(
+        "--crawl-wait-time",
+        type=int,
+        default=60,
+        help="Maximum time to wait for crawl test to complete (seconds, default: 60)"
+    )
     
     args = parser.parse_args()
     
@@ -312,7 +378,7 @@ Examples:
     
     # Test 5: Crawl endpoint
     if not args.skip_crawl:
-        results.append(("Crawl Endpoint", test_crawl_start(api_url, config.api_key, args.target_url)))
+        results.append(("Crawl Endpoint", test_crawl_start(api_url, config.api_key, args.target_url, args.crawl_wait_time)))
     
     # Summary
     print("\n" + "="*80)
