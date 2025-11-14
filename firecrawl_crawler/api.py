@@ -139,7 +139,7 @@ class FirecrawlClient:
         # Retry on 408 errors with longer timeout
         max_retries = 3
         retry_delays = [2, 5, 10]
-        timeouts = [90, 120, 180]  # Increasing timeouts for retries
+        timeouts = [120, 150, 180]  # Increasing timeouts for retries (start with 120s which works)
         
         for attempt in range(max_retries):
             try:
