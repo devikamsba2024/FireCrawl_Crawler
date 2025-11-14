@@ -187,6 +187,30 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
             # Use the job_id from crawl start, fallback to result if needed
             retry_job_id = result.get("id") or result.get("jobId") or job_id
             
+            # Check if we saved any pages incrementally even though final result has no data
+            saved_urls = storage.get_scraped_urls()
+            if saved_urls:
+                print(f"\n⚠️  Warning: Crawl finished with status '{status}' but final result has no data.")
+                print(f"  However, {len(saved_urls)} page(s) were saved incrementally during the crawl!")
+                print(f"  These pages are already saved in: {config.output_dir}")
+                # Update index with saved pages
+                index_entries = []
+                for url in saved_urls:
+                    page_info = storage.get_page_info(url)
+                    if page_info:
+                        # Try to get title from saved file if possible
+                        title = url.split('/')[-1] or url  # Fallback title
+                        index_entries.append({
+                            "title": title,
+                            "url": url,
+                            "file": page_info.get("file", "")
+                        })
+                if index_entries:
+                    storage._create_index_file(index_entries)
+                print(f"\n✓ Found {len(saved_urls)} saved page(s) from incremental saves")
+                print(f"✓ Index updated: {config.output_dir}/INDEX.md")
+                return  # Exit successfully since we have saved pages
+            
             print(f"\n⚠️  Warning: Crawl completed with status '{status}' but no pages found.")
             print(f"  Job ID: {retry_job_id}")
             print(f"  API URL: {config.api_url}")

@@ -172,18 +172,32 @@ class FirecrawlClient:
                         time.sleep(delay)
                         continue
                     else:
-                        # Final attempt failed
+                        # Final attempt failed - server timeout issue
                         logger.error(f"408 Request Timeout scraping {url} after {max_retries} attempts")
                         print(f"✗ All {max_retries} attempts failed with 408 Request Timeout")
+                        print(f"\n⚠️  IMPORTANT: The Firecrawl API server itself is timing out.")
+                        print(f"    This is a server-side timeout (not client-side).")
+                        print(f"    The server has its own timeout limit (likely 60-90 seconds).")
+                        print(f"\n💡 SOLUTIONS:")
+                        print(f"    1. Use CRAWL instead of SCRAPE:")
+                        print(f"       - Crawl handles slow pages better (async, no timeout)")
+                        print(f"       - Example: python crawl_sections.py crawl <section>")
+                        print(f"    2. Check Firecrawl server timeout configuration")
+                        print(f"    3. Test URL directly: curl {url}")
+                        print(f"    4. Try scraping a different, faster page")
                         raise FirecrawlTimeoutError(
                             f"Request timeout (408) scraping {url} after {max_retries} attempts. "
-                            f"Tried timeouts: {', '.join(map(str, timeouts))}s\n"
-                            f"The Firecrawl API server is timing out. Possible causes:\n"
-                            f"  - The page is too slow to load (>180s)\n"
-                            f"  - The Firecrawl API server has a shorter timeout than our client\n"
-                            f"  - The website may be blocking requests\n"
-                            f"  - Try using crawl instead of scrape for this URL\n"
-                            f"  - Check if the URL is accessible directly"
+                            f"Tried client timeouts: {', '.join(map(str, timeouts))}s\n"
+                            f"\n⚠️  SERVER-SIDE TIMEOUT: The Firecrawl API server is timing out.\n"
+                            f"    The server has its own timeout (likely 60-90s) which we cannot control.\n"
+                            f"    Increasing client timeout won't help if server always times out.\n"
+                            f"\n💡 SOLUTION: Use CRAWL instead of SCRAPE for slow pages.\n"
+                            f"    Crawl is async and doesn't have the same timeout limitations.\n"
+                            f"    Example: python crawl_sections.py crawl <section>\n"
+                            f"\nOther options:\n"
+                            f"  - Check Firecrawl server timeout configuration\n"
+                            f"  - Test URL directly: curl {url}\n"
+                            f"  - Try a different, faster page"
                         )
                 else:
                     # Other HTTP errors - don't retry
@@ -455,6 +469,8 @@ class FirecrawlClient:
         consecutive_connection_errors = 0  # Track consecutive connection errors
         max_consecutive_connection_errors = 5  # Max connection errors before giving up
         saved_page_urls = set()  # Track which pages we've already saved for incremental saving
+        scraping_start_time = None  # Track when scraping status started
+        last_scraping_status_time = None  # Track last time we saw scraping status
         
         while max_wait_time is None or time.time() - start_time < max_wait_time:
             try:
@@ -487,8 +503,49 @@ class FirecrawlClient:
             
             status = status_data.get("status")
             
-            # Check for partial data and save incrementally if enabled
+            # Get diagnostic info for all statuses, not just completed
             pages = status_data.get("data", [])
+            total_pages = status_data.get("total", 0)
+            stats = status_data.get("stats", {})
+            
+            # Log diagnostic info during scraping to help debug
+            if status == "scraping":
+                if scraping_start_time is None:
+                    scraping_start_time = time.time()
+                    logger.debug(f"Crawl job {job_id} started scraping status")
+                
+                last_scraping_status_time = time.time()
+                scraping_duration = int(time.time() - scraping_start_time)
+                elapsed = int(time.time() - start_time)
+                
+                logger.debug(
+                    f"Crawl job {job_id} status: scraping (duration: {scraping_duration}s), "
+                    f"data: {len(pages)} pages, "
+                    f"total: {total_pages}, "
+                    f"stats: {stats}, "
+                    f"keys: {list(status_data.keys())}"
+                )
+                
+                # Warn if scraping for a long time with no data
+                if scraping_duration > 300 and len(pages) == 0:  # 5 minutes with no data
+                    print(f"⚠️  WARNING: Crawl has been 'scraping' for {scraping_duration}s with no data yet.")
+                    print(f"    This may indicate the crawl is stuck or server is slow.")
+                    print(f"    Job ID: {job_id}")
+                    if total_pages > 0:
+                        print(f"    API reports {total_pages} total pages, but data array is empty.")
+                    print(f"    You can check status manually: curl {self.config.api_url}/v1/crawl/{job_id}")
+                
+                # Show progress if we have stats or pages
+                if stats or len(pages) > 0:
+                    print(f"Crawl status: {status} (elapsed: {elapsed}s, pages found: {len(pages)}, total: {total_pages})")
+            else:
+                # Reset scraping timer if status changed
+                if scraping_start_time is not None:
+                    scraping_duration = int(time.time() - scraping_start_time) if scraping_start_time else 0
+                    logger.debug(f"Crawl job {job_id} exited scraping status after {scraping_duration}s")
+                    scraping_start_time = None
+            
+            # Check for partial data and save incrementally if enabled (works during scraping too)
             if pages and incremental_save:
                 new_pages = []
                 for p in pages:
@@ -511,8 +568,7 @@ class FirecrawlClient:
             
             if status == "completed":
                 # Check if data is available (sometimes completed but data not ready yet)
-                total_pages = status_data.get("total", 0)
-                stats = status_data.get("stats", {})
+                # Note: total_pages, stats, error are already extracted above
                 error = status_data.get("error")
                 
                 # Log diagnostic info when completed but no data
@@ -640,8 +696,20 @@ class FirecrawlClient:
             if status != "completed":
                 completed_without_data_count = 0
             
-            logger.debug(f"Crawl status: {status}, waiting...")
-            print(f"Crawl status: {status}, waiting...")
+            # Show progress for scraping status with more info
+            if status == "scraping":
+                elapsed_time = int(time.time() - start_time)
+                if total_pages > 0:
+                    print(f"Crawl status: {status} (elapsed: {elapsed_time}s, total pages: {total_pages}, data: {len(pages)} pages)...")
+                elif len(pages) > 0:
+                    print(f"Crawl status: {status} (elapsed: {elapsed_time}s, found {len(pages)} page(s) so far)...")
+                else:
+                    print(f"Crawl status: {status} (elapsed: {elapsed_time}s), waiting...")
+                logger.debug(f"Crawl status: {status}, elapsed: {elapsed_time}s, pages: {len(pages)}, total: {total_pages}")
+            else:
+                logger.debug(f"Crawl status: {status}, waiting...")
+                print(f"Crawl status: {status}, waiting...")
+            
             time.sleep(poll_interval)
         
         # Only timeout if max_wait_time was set
