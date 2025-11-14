@@ -224,6 +224,8 @@ class FirecrawlClient:
                     
                     # If still no data after retries, return what we have
                     logger.warning(f"Crawl job {job_id} completed but no pages found after retries")
+                    logger.debug(f"Status data keys: {list(status_data.keys())}")
+                    logger.debug(f"Status data: {status_data}")
                     return status_data
             elif status == "failed":
                 error_msg = status_data.get("error", "Unknown error")
