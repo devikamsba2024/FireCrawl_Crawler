@@ -144,32 +144,46 @@ class FirecrawlClient:
         for attempt in range(max_retries):
             try:
                 current_timeout = timeouts[min(attempt, len(timeouts) - 1)]
+                logger.debug(f"Scrape attempt {attempt + 1}/{max_retries} with {current_timeout}s timeout")
+                print(f"  Attempt {attempt + 1}/{max_retries}: Using {current_timeout}s timeout...")
                 response = self.session.post(endpoint, json=payload, timeout=current_timeout)
                 response.raise_for_status()
                 data = response.json()
-                logger.info(f"Successfully scraped: {url}")
+                logger.info(f"Successfully scraped: {url} on attempt {attempt + 1}")
+                print(f"  ✓ Scrape successful on attempt {attempt + 1}")
                 return data
             except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code
+                logger.warning(f"HTTP error {status_code} on attempt {attempt + 1}/{max_retries}")
+                
                 # Handle 408 Request Timeout specifically
-                if e.response.status_code == 408:
+                if status_code == 408:
                     if attempt < max_retries - 1:
+                        next_attempt = attempt + 1
+                        next_timeout = timeouts[min(next_attempt, len(timeouts) - 1)]
                         delay = retry_delays[attempt]
                         logger.warning(
                             f"408 Request Timeout scraping {url} (attempt {attempt + 1}/{max_retries}). "
-                            f"Retrying with longer timeout ({current_timeout}s) in {delay}s..."
+                            f"Server timed out at {current_timeout}s. "
+                            f"Retrying attempt {next_attempt + 1} with {next_timeout}s timeout after {delay}s delay..."
                         )
-                        print(f"⚠️  Request timeout (408) - retrying with longer timeout... ({attempt + 1}/{max_retries})")
+                        print(f"⚠️  408 Request Timeout (attempt {attempt + 1}/{max_retries})")
+                        print(f"    Server timed out. Retrying in {delay}s with {next_timeout}s timeout...")
                         time.sleep(delay)
                         continue
                     else:
                         # Final attempt failed
                         logger.error(f"408 Request Timeout scraping {url} after {max_retries} attempts")
+                        print(f"✗ All {max_retries} attempts failed with 408 Request Timeout")
                         raise FirecrawlTimeoutError(
                             f"Request timeout (408) scraping {url} after {max_retries} attempts. "
-                            f"The page may be too slow to load. Try:\n"
-                            f"  - Increase wait_for parameter\n"
-                            f"  - Check if the URL is accessible\n"
-                            f"  - The website may be blocking requests"
+                            f"Tried timeouts: {', '.join(map(str, timeouts))}s\n"
+                            f"The Firecrawl API server is timing out. Possible causes:\n"
+                            f"  - The page is too slow to load (>180s)\n"
+                            f"  - The Firecrawl API server has a shorter timeout than our client\n"
+                            f"  - The website may be blocking requests\n"
+                            f"  - Try using crawl instead of scrape for this URL\n"
+                            f"  - Check if the URL is accessible directly"
                         )
                 else:
                     # Other HTTP errors - don't retry

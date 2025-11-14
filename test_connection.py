@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 from firecrawl_crawler import Config, FirecrawlClient
-from firecrawl_crawler.exceptions import FirecrawlConnectionError, FirecrawlAPIError
+from firecrawl_crawler.exceptions import FirecrawlConnectionError, FirecrawlAPIError, FirecrawlTimeoutError
 
 
 def test_api_connection(api_url: str, api_key: str = None):
@@ -109,11 +109,33 @@ def test_scrape_endpoint(api_url: str, api_key: str = None, test_url: str = "htt
     except FirecrawlConnectionError as e:
         print(f"✗ Connection error: {e}")
         return False
+    except FirecrawlTimeoutError as e:
+        print(f"✗ Timeout error: {e}")
+        print("\n💡 The scrape request timed out (likely 408 error). This may indicate:")
+        print("  - The page is too slow to load (may need >120 seconds)")
+        print("  - The Firecrawl API is overloaded")
+        print("  - Network connectivity issues (especially from VM)")
+        print("  - Try running the test again - it will retry with longer timeouts")
+        print("\n💡 Note: The scrape endpoint now retries automatically with:")
+        print("  - Attempt 1: 120s timeout")
+        print("  - Attempt 2: 150s timeout") 
+        print("  - Attempt 3: 180s timeout")
+        return False
     except FirecrawlAPIError as e:
-        print(f"✗ API error: {e}")
+        error_str = str(e)
+        if "408" in error_str or "Request timeout" in error_str:
+            print(f"✗ API timeout error (408): {e}")
+            print("\n💡 This is a 408 Request Timeout error.")
+            print("  The scrape endpoint should retry automatically with longer timeouts.")
+            print("  If this persists, the page may be too slow or blocking requests.")
+        else:
+            print(f"✗ API error: {e}")
         return False
     except Exception as e:
-        print(f"✗ Unexpected error: {e}")
+        print(f"✗ Unexpected error: {type(e).__name__}: {e}")
+        import traceback
+        print("\n💡 Full error details:")
+        traceback.print_exc()
         return False
 
 
