@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Firecrawl Crawler Setup Script
-# This script helps you set up the crawler on a new machine
+# Prerequisites: Firecrawl already running at http://localhost:3002
 
 set -e  # Exit on error
 
@@ -32,26 +32,6 @@ echo "📦 Installing Python dependencies..."
 pip3 install -r requirements.txt
 echo "✅ Dependencies installed"
 
-# Check for Firecrawl
-echo ""
-echo "🔍 Checking for Firecrawl..."
-if curl -s http://localhost:3002/health > /dev/null 2>&1; then
-    echo "✅ Firecrawl is running at http://localhost:3002"
-else
-    echo "⚠️  Firecrawl is not running at http://localhost:3002"
-    echo ""
-    echo "Please start Firecrawl:"
-    echo "  Option 1 (Docker): docker-compose up -d"
-    echo "  Option 2 (npm):    firecrawl start"
-    echo "  Option 3 (Cloud):  Use https://api.firecrawl.dev with API key"
-    echo ""
-    read -p "Continue anyway? (y/n) " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
-
 # Create .env file if it doesn't exist
 echo ""
 if [ -f .env ]; then
@@ -61,10 +41,6 @@ else
     cat > .env << 'EOF'
 # Firecrawl Configuration
 FIRECRAWL_API_URL=http://localhost:3002
-
-# For Firecrawl Cloud, uncomment and add your API key:
-# FIRECRAWL_API_URL=https://api.firecrawl.dev
-# FIRECRAWL_API_KEY=your_api_key_here
 
 # Output directory
 OUTPUT_DIR=./output
@@ -80,12 +56,14 @@ echo "✅ Output directory created"
 
 # Test the installation
 echo ""
-echo "🧪 Testing installation..."
-if python3 main.py scrape https://example.com --output ./output/test 2>/dev/null; then
-    echo "✅ Test scrape successful!"
-    rm -rf ./output/test
+echo "🧪 Testing setup..."
+echo "Checking Python imports..."
+python3 -c "import requests; import os; from dotenv import load_dotenv; print('✅ All dependencies imported successfully')" 2>/dev/null
+
+if [ $? -eq 0 ]; then
+    echo "✅ Setup validation passed!"
 else
-    echo "⚠️  Test scrape failed (may need Firecrawl running)"
+    echo "⚠️  Some imports failed, but you can still try running the crawler"
 fi
 
 # Summary
@@ -93,13 +71,18 @@ echo ""
 echo "🎉 Setup Complete!"
 echo "=================="
 echo ""
-echo "Next steps:"
-echo "1. Edit .env file if needed (for custom API URL or key)"
-echo "2. Edit sections_config.json to define your sections"
-echo "3. Run your first crawl:"
-echo "   python3 main.py scrape https://example.com"
-echo "   python3 crawl_sections.py list"
+echo "📝 Configuration:"
+echo "  - Python version: $PYTHON_VERSION"
+echo "  - Dependencies: installed"
+echo "  - Output directory: ./output"
+echo "  - Config file: .env (edit if needed)"
 echo ""
-echo "Documentation: See README.md for full usage guide"
+echo "🚀 Ready to crawl!"
 echo ""
-
+echo "Quick start commands:"
+echo "  1. List sections:    python3 crawl_sections.py list"
+echo "  2. Test scrape:      python3 main.py scrape https://example.com"
+echo "  3. Crawl a section:  python3 crawl_sections.py crawl graduate_school"
+echo ""
+echo "📖 Full documentation: See README.md"
+echo ""
