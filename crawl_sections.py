@@ -26,10 +26,16 @@ def list_sections(sections_config):
     print("=" * 80)
     
     for key, section in sections_config["sections"].items():
+        max_depth = section.get('max_depth', 'auto')
+        limit = section.get('limit', 'auto')
+        timeout = section.get('timeout', 'auto')
+        
         print(f"\n{section['name']} ({key})")
         print(f"  URL: {section['url']}")
         print(f"  Output: {section['output_dir']}")
-        print(f"  Limits: max_depth={section['max_depth']}, limit={section['limit']}")
+        print(f"  Limits: max_depth={max_depth}, limit={limit}, timeout={timeout if timeout != 'auto' else 'auto'}s")
+        if max_depth == 'auto' or limit == 'auto' or timeout == 'auto':
+            print(f"  ⚠️  Auto-detection: Will analyze sitemap to determine values")
         print(f"  Schedule: {section['schedule']}")
         print(f"  Description: {section['description']}")
 
@@ -43,12 +49,60 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
     
     section = sections_config["sections"][section_key]
     
+    # Auto-detect limit, depth, and timeout from sitemap if not set
+    max_depth = section.get('max_depth')
+    limit = section.get('limit')
+    timeout = section.get('timeout')
+    
+    if max_depth is None or limit is None or timeout is None:
+        print(f"\n🔍 Auto-detecting crawl parameters from sitemap...")
+        from firecrawl_crawler import SitemapParser
+        
+        # Parse base URL for sitemap
+        from urllib.parse import urlparse
+        parsed = urlparse(section['url'])
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        
+        parser = SitemapParser(base_url)
+        analysis = parser.analyze_section(section['url'])
+        
+        if analysis['page_count'] > 0:
+            if max_depth is None:
+                max_depth = analysis['max_depth']
+                print(f"  ✓ Detected max_depth: {max_depth}")
+            if limit is None:
+                limit = analysis['page_count']
+                print(f"  ✓ Detected page count: {limit}")
+            if timeout is None:
+                # Calculate timeout based on page count and depth
+                # Formula: base_time + (pages * time_per_page) + (depth * depth_factor)
+                base_time = 30  # 30 seconds base time
+                time_per_page = 3  # 3 seconds per page (conservative estimate)
+                depth_factor = 10  # 10 seconds per depth level
+                
+                calculated_timeout = base_time + (limit * time_per_page) + (max_depth * depth_factor)
+                # Add 50% buffer for safety
+                timeout = int(calculated_timeout * 1.5)
+                # Minimum 60 seconds, maximum 3600 seconds (1 hour)
+                timeout = max(60, min(timeout, 3600))
+                print(f"  ✓ Calculated timeout: {timeout}s ({timeout//60}m {timeout%60}s)")
+        else:
+            print(f"  ⚠️  No pages found in sitemap, using defaults")
+            if max_depth is None:
+                max_depth = 2
+            if limit is None:
+                limit = 50
+            if timeout is None:
+                timeout = 600  # Default 10 minutes
+        print()
+    
     print(f"\n{'='*80}")
     print(f"Crawling: {section['name']}")
     print(f"{'='*80}")
     print(f"URL: {section['url']}")
     print(f"Output: {section['output_dir']}")
-    print(f"Max Depth: {section['max_depth']}, Limit: {section['limit']}")
+    print(f"Max Depth: {max_depth}, Limit: {limit}")
+    print(f"Timeout: {timeout}s ({timeout//60}m {timeout%60}s)")
     print()
     
     # Setup config
@@ -62,11 +116,11 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
     storage = MarkdownStorage(config.output_dir)
     
     try:
-        # Start crawl
+        # Start crawl (use auto-detected values if available)
         job_id = client.crawl_website(
             url=section['url'],
-            max_depth=section['max_depth'],
-            limit=section['limit'],
+            max_depth=max_depth,
+            limit=limit,
             formats=["markdown"],
             only_main_content=True
         )
@@ -74,10 +128,10 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
         print(f"Crawl job started: {job_id}")
         print("Waiting for crawl to complete...\n")
         
-        # Wait for completion
+        # Wait for completion with configured timeout (already set above)
         result = client.wait_for_crawl(
             job_id=job_id,
-            max_wait_time=600,  # 10 minutes
+            max_wait_time=timeout,
             poll_interval=5
         )
         

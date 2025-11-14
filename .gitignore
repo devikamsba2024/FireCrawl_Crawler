@@ -53,7 +53,9 @@ output/
 !docs/*.md
 
 # Logs
+logs/
 *.log
+*.log.*
 logs/
 crawler.log
 

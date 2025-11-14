@@ -3,7 +3,10 @@ import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Dict, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class SitemapParser:
@@ -171,4 +174,65 @@ class SitemapParser:
                 updated.append(url)
         
         return updated
+    
+    def analyze_section(
+        self,
+        section_url: str
+    ) -> Dict[str, int]:
+        """
+        Analyze sitemap to determine page count and depth for a section.
+        
+        Args:
+            section_url: Base URL of the section to analyze
+            
+        Returns:
+            Dict with 'page_count' and 'max_depth' keys
+        """
+        all_urls = self.get_all_urls()
+        if not all_urls:
+            logger.warning(f"No URLs found in sitemap for {section_url}")
+            return {"page_count": 0, "max_depth": 0}
+        
+        # Parse section URL to get path
+        section_parsed = urlparse(section_url)
+        section_path = section_parsed.path.rstrip('/')
+        
+        # Filter URLs that match this section
+        matching_urls = []
+        for entry in all_urls:
+            url = entry['url']
+            url_parsed = urlparse(url)
+            url_path = url_parsed.path.rstrip('/')
+            
+            # Check if URL is under this section
+            if url_path.startswith(section_path) or section_path == '':
+                matching_urls.append(url_path)
+        
+        # Calculate depth
+        # Depth is relative to section path
+        section_depth = len([p for p in section_path.split('/') if p]) if section_path else 0
+        max_depth = 0
+        
+        for url_path in matching_urls:
+            # Count path segments after section path
+            if section_path:
+                relative_path = url_path[len(section_path):].lstrip('/')
+            else:
+                relative_path = url_path.lstrip('/')
+            
+            if relative_path:
+                depth = len([p for p in relative_path.split('/') if p])
+            else:
+                depth = 0  # This is the section root itself
+            
+            max_depth = max(max_depth, depth)
+        
+        page_count = len(matching_urls)
+        
+        logger.info(f"Section analysis for {section_url}: {page_count} pages, max_depth={max_depth}")
+        
+        return {
+            "page_count": page_count,
+            "max_depth": max_depth
+        }
 

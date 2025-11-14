@@ -34,6 +34,9 @@
       "name": "Innovation at Wichita State",
       "url": "https://www.wichita.edu/about/innovation/",
       "output_dir": "output/innovation",
+      "max_depth": 2,
+      "limit": 100,
+      "timeout": 600,
       "schedule": "monthly",
       "description": "Innovation and entrepreneurship"
     },
@@ -63,6 +66,7 @@
       "output_dir": "output/student_life",
       "max_depth": 2,
       "limit": 150,
+      "timeout": 900,
       "schedule": "weekly",
       "description": "Student life and activities"
     },

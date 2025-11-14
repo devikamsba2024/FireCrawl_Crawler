@@ -44,6 +44,9 @@ FIRECRAWL_API_URL=http://localhost:3002
 
 # Output directory
 OUTPUT_DIR=./output
+
+# Logging level (DEBUG, INFO, WARNING, ERROR)
+LOG_LEVEL=INFO
 EOF
     echo "✅ Created .env file (edit it to customize)"
 fi

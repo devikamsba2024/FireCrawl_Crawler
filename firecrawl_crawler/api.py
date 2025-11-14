@@ -3,6 +3,10 @@ import requests
 import time
 from typing import Optional, Dict, Any, List
 from .config import Config
+from .logger import get_logger
+from .exceptions import FirecrawlAPIError, FirecrawlConnectionError, FirecrawlTimeoutError
+
+logger = get_logger(__name__)
 
 
 class FirecrawlClient:
@@ -18,6 +22,7 @@ class FirecrawlClient:
         self.config = config
         self.session = requests.Session()
         self.session.headers.update(config.get_headers())
+        logger.debug(f"Initialized FirecrawlClient with URL: {config.api_url}")
     
     def scrape_url(
         self,
@@ -49,12 +54,32 @@ class FirecrawlClient:
         if wait_for:
             payload["waitFor"] = wait_for
         
+        logger.debug(f"Scraping URL: {url}")
+        logger.debug(f"Payload: {payload}")
+        
         try:
             response = self.session.post(endpoint, json=payload, timeout=60)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            logger.info(f"Successfully scraped: {url}")
+            return data
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error scraping {url}: {e}")
+            raise FirecrawlConnectionError(
+                f"Cannot connect to Firecrawl at {self.config.api_url}. "
+                f"Is it running? Error: {str(e)}"
+            )
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Timeout scraping {url}: {e}")
+            raise FirecrawlTimeoutError(f"Timeout scraping {url}: {str(e)}")
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP error scraping {url}: {e.response.status_code} - {e}")
+            raise FirecrawlAPIError(
+                f"HTTP error scraping {url}: {e.response.status_code} - {str(e)}"
+            )
         except requests.exceptions.RequestException as e:
-            raise Exception(f"Error scraping {url}: {str(e)}")
+            logger.error(f"Request error scraping {url}: {e}")
+            raise FirecrawlAPIError(f"Error scraping {url}: {str(e)}")
     
     def crawl_website(
         self,
@@ -89,13 +114,36 @@ class FirecrawlClient:
             "maxDepth": max_depth
         }
         
+        logger.info(f"Starting crawl: {url} (depth={max_depth}, limit={limit})")
+        logger.debug(f"Crawl payload: {payload}")
+        
         try:
             response = self.session.post(endpoint, json=payload, timeout=60)
             response.raise_for_status()
             data = response.json()
-            return data.get("id") or data.get("jobId")
+            job_id = data.get("id") or data.get("jobId")
+            if not job_id:
+                logger.error(f"No job ID in response for {url}")
+                raise FirecrawlAPIError(f"No job ID returned from crawl API for {url}")
+            logger.info(f"Crawl job started: {job_id}")
+            return job_id
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error starting crawl for {url}: {e}")
+            raise FirecrawlConnectionError(
+                f"Cannot connect to Firecrawl at {self.config.api_url}. "
+                f"Is it running? Error: {str(e)}"
+            )
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Timeout starting crawl for {url}: {e}")
+            raise FirecrawlTimeoutError(f"Timeout starting crawl for {url}: {str(e)}")
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP error starting crawl for {url}: {e.response.status_code} - {e}")
+            raise FirecrawlAPIError(
+                f"HTTP error starting crawl for {url}: {e.response.status_code} - {str(e)}"
+            )
         except requests.exceptions.RequestException as e:
-            raise Exception(f"Error starting crawl for {url}: {str(e)}")
+            logger.error(f"Request error starting crawl for {url}: {e}")
+            raise FirecrawlAPIError(f"Error starting crawl for {url}: {str(e)}")
     
     def get_crawl_status(self, job_id: str) -> Dict[str, Any]:
         """
@@ -109,12 +157,23 @@ class FirecrawlClient:
         """
         endpoint = f"{self.config.api_url}/v1/crawl/{job_id}"
         
+        logger.debug(f"Checking crawl status for job: {job_id}")
+        
         try:
             response = self.session.get(endpoint, timeout=30)
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error getting status for {job_id}: {e}")
+            raise FirecrawlConnectionError(
+                f"Cannot connect to Firecrawl at {self.config.api_url}: {str(e)}"
+            )
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Timeout getting status for {job_id}: {e}")
+            raise FirecrawlTimeoutError(f"Timeout getting crawl status for job {job_id}: {str(e)}")
         except requests.exceptions.RequestException as e:
-            raise Exception(f"Error getting crawl status: {str(e)}")
+            logger.error(f"Error getting status for {job_id}: {e}")
+            raise FirecrawlAPIError(f"Error getting crawl status for job {job_id}: {str(e)}")
     
     def wait_for_crawl(
         self,
@@ -134,18 +193,27 @@ class FirecrawlClient:
             Final job data with all scraped pages
         """
         start_time = time.time()
+        logger.info(f"Waiting for crawl job {job_id} to complete (max {max_wait_time}s)")
         
         while time.time() - start_time < max_wait_time:
             status_data = self.get_crawl_status(job_id)
             status = status_data.get("status")
             
             if status == "completed":
+                logger.info(f"Crawl job {job_id} completed successfully")
                 return status_data
             elif status == "failed":
-                raise Exception(f"Crawl job {job_id} failed")
+                error_msg = status_data.get("error", "Unknown error")
+                logger.error(f"Crawl job {job_id} failed: {error_msg}")
+                raise FirecrawlAPIError(f"Crawl job {job_id} failed: {error_msg}")
             
+            logger.debug(f"Crawl status: {status}, waiting...")
             print(f"Crawl status: {status}, waiting...")
             time.sleep(poll_interval)
         
-        raise TimeoutError(f"Crawl job {job_id} timed out after {max_wait_time}s")
+        logger.error(f"Crawl job {job_id} timed out after {max_wait_time}s")
+        raise FirecrawlTimeoutError(
+            f"Crawl job {job_id} timed out after {max_wait_time}s. "
+            f"Last status: {status_data.get('status', 'unknown')}"
+        )
 

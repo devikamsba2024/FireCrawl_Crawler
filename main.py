@@ -2,11 +2,26 @@
 import argparse
 import sys
 from urllib.parse import urlparse
-from firecrawl_crawler import Config, FirecrawlClient, MarkdownStorage, SitemapParser
+from firecrawl_crawler import (
+    Config,
+    FirecrawlClient,
+    MarkdownStorage,
+    SitemapParser,
+    setup_logger,
+    FirecrawlConnectionError,
+    FirecrawlTimeoutError,
+    FirecrawlAPIError,
+    StorageError
+)
+
+# Initialize logger
+logger = setup_logger()
 
 
 def scrape_single_url(args):
     """Scrape a single URL."""
+    logger.info(f"=== Starting scrape command for {args.url} ===")
+    
     config = Config(
         api_url=args.api_url,
         api_key=args.api_key,
@@ -17,6 +32,7 @@ def scrape_single_url(args):
     storage = MarkdownStorage(config.output_dir)
     
     print(f"Scraping: {args.url}")
+    logger.debug(f"Full content: {args.full_content}, Wait for: {args.wait_for}")
     
     try:
         # Scrape the URL
@@ -35,13 +51,32 @@ def scrape_single_url(args):
             print(f"\n✗ Scraping failed: {data.get('error', 'Unknown error')}")
             sys.exit(1)
             
+    except FirecrawlConnectionError as e:
+        print(f"\n✗ Connection Error: {str(e)}")
+        print("💡 Tip: Make sure Firecrawl is running at http://localhost:3002")
+        sys.exit(1)
+    except FirecrawlTimeoutError as e:
+        print(f"\n✗ Timeout Error: {str(e)}")
+        print("💡 Tip: Try increasing --wait-for value")
+        sys.exit(1)
+    except FirecrawlAPIError as e:
+        print(f"\n✗ API Error: {str(e)}")
+        sys.exit(1)
+    except StorageError as e:
+        print(f"\n✗ Storage Error: {str(e)}")
+        print("💡 Tip: Check file permissions and disk space")
+        sys.exit(1)
     except Exception as e:
-        print(f"\n✗ Error: {str(e)}")
+        print(f"\n✗ Unexpected Error: {str(e)}")
+        print("💡 Tip: Run with python3 -v for more details")
         sys.exit(1)
 
 
 def crawl_website(args):
     """Crawl an entire website."""
+    logger.info(f"=== Starting crawl command for {args.url} ===")
+    logger.info(f"Parameters: depth={args.max_depth}, limit={args.limit}, timeout={args.timeout}")
+    
     config = Config(
         api_url=args.api_url,
         api_key=args.api_key,
@@ -85,13 +120,31 @@ def crawl_website(args):
             print("\n✗ No pages were scraped")
             sys.exit(1)
             
+    except FirecrawlConnectionError as e:
+        print(f"\n✗ Connection Error: {str(e)}")
+        print("💡 Tip: Make sure Firecrawl is running at http://localhost:3002")
+        sys.exit(1)
+    except FirecrawlTimeoutError as e:
+        print(f"\n✗ Timeout Error: {str(e)}")
+        print("💡 Tip: Try increasing --timeout or reducing --limit")
+        sys.exit(1)
+    except FirecrawlAPIError as e:
+        print(f"\n✗ API Error: {str(e)}")
+        sys.exit(1)
+    except StorageError as e:
+        print(f"\n✗ Storage Error: {str(e)}")
+        print("💡 Tip: Check file permissions and disk space")
+        sys.exit(1)
     except Exception as e:
-        print(f"\n✗ Error: {str(e)}")
+        print(f"\n✗ Unexpected Error: {str(e)}")
+        print("💡 Tip: Run with python3 -v for more details")
         sys.exit(1)
 
 
 def check_updates(args):
     """Check for updated pages using sitemap."""
+    logger.info(f"=== Starting update check for {args.url} ===")
+    
     config = Config(
         api_url=args.api_url,
         api_key=args.api_key,
@@ -142,8 +195,15 @@ def check_updates(args):
         else:
             print(f"Run with --auto-update to scrape these {len(updated_urls)} updated pages")
             
+    except FirecrawlConnectionError as e:
+        print(f"\n✗ Connection Error: {str(e)}")
+        print("💡 Tip: Make sure Firecrawl is running")
+        sys.exit(1)
+    except FirecrawlAPIError as e:
+        print(f"\n✗ API Error: {str(e)}")
+        sys.exit(1)
     except Exception as e:
-        print(f"\n✗ Error: {str(e)}")
+        print(f"\n✗ Unexpected Error: {str(e)}")
         sys.exit(1)
 
 
@@ -175,8 +235,11 @@ def update_pages(urls, config, args):
                 print(f"  ✗ Failed: {data.get('error', 'Unknown error')}")
                 failed_count += 1
                 
-        except Exception as e:
+        except (FirecrawlConnectionError, FirecrawlTimeoutError, FirecrawlAPIError) as e:
             print(f"  ✗ Error: {str(e)}")
+            failed_count += 1
+        except Exception as e:
+            print(f"  ✗ Unexpected error: {str(e)}")
             failed_count += 1
     
     print(f"\n✓ Update complete!")

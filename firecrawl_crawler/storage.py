@@ -6,6 +6,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
+from .logger import get_logger
+from .exceptions import StorageError
+
+logger = get_logger(__name__)
 
 
 class MarkdownStorage:
@@ -22,6 +26,7 @@ class MarkdownStorage:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.metadata_file = self.output_dir / ".scrape_metadata.json"
         self.metadata = self._load_metadata()
+        logger.debug(f"Initialized MarkdownStorage: {self.output_dir}")
     
     def _load_metadata(self) -> Dict[str, Any]:
         """
@@ -32,14 +37,29 @@ class MarkdownStorage:
         """
         if self.metadata_file.exists():
             try:
-                return json.loads(self.metadata_file.read_text())
-            except Exception:
+                content = self.metadata_file.read_text()
+                metadata = json.loads(content)
+                logger.debug(f"Loaded metadata: {len(metadata.get('pages', {}))} pages")
+                return metadata
+            except json.JSONDecodeError as e:
+                logger.warning(f"Corrupted metadata file, starting fresh: {e}")
+                print(f"⚠️  Warning: Corrupted metadata file, starting fresh. Error: {e}")
                 return {"pages": {}, "last_crawl": None}
+            except Exception as e:
+                logger.warning(f"Cannot read metadata file: {e}")
+                print(f"⚠️  Warning: Cannot read metadata file: {e}")
+                return {"pages": {}, "last_crawl": None}
+        logger.debug("No existing metadata file, starting fresh")
         return {"pages": {}, "last_crawl": None}
     
     def _save_metadata(self) -> None:
         """Save metadata to file."""
-        self.metadata_file.write_text(json.dumps(self.metadata, indent=2))
+        try:
+            self.metadata_file.write_text(json.dumps(self.metadata, indent=2))
+            logger.debug(f"Saved metadata: {len(self.metadata.get('pages', {}))} pages")
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to save metadata: {e}")
+            raise StorageError(f"Cannot save metadata to {self.metadata_file}: {e}")
     
     def _update_page_metadata(self, url: str, filepath: str) -> None:
         """
@@ -168,13 +188,27 @@ class MarkdownStorage:
         title = data.get("metadata", {}).get("title")
         markdown_content = data.get("markdown", "")
         
-        # Generate filename
-        if custom_filename:
-            filename = custom_filename if custom_filename.endswith('.md') else f"{custom_filename}.md"
-        else:
-            filename = self._generate_filename(url, title)
+        # Check if this URL was already scraped (for updates)
+        existing_file = None
+        if url in self.metadata.get("pages", {}):
+            existing_file = self.metadata["pages"][url].get("file")
+            if existing_file and Path(existing_file).exists():
+                filepath = Path(existing_file)
+                logger.debug(f"Updating existing file for {url}")
+            else:
+                existing_file = None
         
-        filepath = self._ensure_unique_filename(self.output_dir / filename)
+        # Generate new filename if no existing file
+        if not existing_file:
+            if custom_filename:
+                filename = custom_filename if custom_filename.endswith('.md') else f"{custom_filename}.md"
+            else:
+                filename = self._generate_filename(url, title)
+            
+            filepath = self.output_dir / filename
+            # Only ensure unique filename for truly new pages
+            if filepath.exists() and url not in self.metadata.get("pages", {}):
+                filepath = self._ensure_unique_filename(filepath)
         
         # Create content with metadata header
         content = f"# {title or 'Untitled'}\n\n"
@@ -183,8 +217,14 @@ class MarkdownStorage:
         content += markdown_content
         
         # Save file
-        filepath.write_text(content, encoding='utf-8')
-        print(f"✓ Saved: {filepath}")
+        try:
+            filepath.write_text(content, encoding='utf-8')
+            logger.info(f"Saved: {url} -> {filepath.name}")
+            logger.debug(f"File size: {filepath.stat().st_size} bytes")
+            print(f"✓ Saved: {filepath}")
+        except (IOError, OSError) as e:
+            logger.error(f"Cannot write file {filepath}: {e}")
+            raise StorageError(f"Cannot write file {filepath}: {e}")
         
         # Update metadata
         self._update_page_metadata(url, str(filepath))
@@ -208,8 +248,10 @@ class MarkdownStorage:
         """
         saved_files = []
         index_entries = []
+        logger.info(f"Saving {len(pages)} pages")
         
         for i, page in enumerate(pages, 1):
+            url = page.get("metadata", {}).get("url") or page.get("url", "unknown")
             print(f"Saving page {i}/{len(pages)}...")
             try:
                 filepath = self.save_single_page(page)
@@ -223,13 +265,18 @@ class MarkdownStorage:
                     "url": url,
                     "file": Path(filepath).name
                 })
+            except StorageError as e:
+                logger.error(f"Storage error saving {url}: {e}")
+                print(f"✗ Storage error saving page: {str(e)}")
             except Exception as e:
-                print(f"✗ Error saving page: {str(e)}")
+                logger.error(f"Unexpected error saving {url}: {e}")
+                print(f"✗ Unexpected error saving page: {str(e)}")
         
         # Create index file
         if create_index and index_entries:
             self._create_index_file(index_entries)
         
+        logger.info(f"Saved {len(saved_files)} pages successfully")
         return saved_files
     
     def _create_index_file(self, entries: List[Dict[str, str]]) -> None:
@@ -240,6 +287,7 @@ class MarkdownStorage:
             entries: List of page entries with title, url, and file
         """
         index_path = self.output_dir / "INDEX.md"
+        logger.debug(f"Creating index file with {len(entries)} entries")
         
         content = "# Crawled Pages Index\n\n"
         content += f"Total pages: {len(entries)}\n\n"
@@ -251,5 +299,6 @@ class MarkdownStorage:
             content += f"- **File:** [{entry['file']}](./{entry['file']})\n\n"
         
         index_path.write_text(content, encoding='utf-8')
+        logger.info(f"Created index file: {index_path}")
         print(f"✓ Created index: {index_path}")
 
