@@ -136,53 +136,120 @@ class FirecrawlClient:
         logger.debug(f"Scraping URL: {url}")
         logger.debug(f"Payload: {payload}")
         
-        try:
-            response = self.session.post(endpoint, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            logger.info(f"Successfully scraped: {url}")
-            return data
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connection error scraping {url}: {e}")
-            
-            # Try to check if API is accessible
-            is_accessible = self.check_connection()
-            
-            error_msg = (
-                f"Cannot connect to Firecrawl API at {self.config.api_url}.\n"
-                f"  Attempted endpoint: {endpoint}\n"
-            )
-            
-            if not is_accessible:
-                error_msg += (
-                    f"  Health check failed - API is not accessible.\n"
-                    f"  This may be due to:\n"
-                    f"    - Firecrawl is not running\n"
-                    f"    - Network connectivity issues (especially from VM)\n"
-                    f"    - Firewall blocking connections\n"
-                    f"    - Wrong API URL (check if accessible from this machine)\n"
-                    f"  Try: curl {self.config.api_url}/health\n"
-                )
-            else:
-                error_msg += (
-                    f"  Health check passed, but scrape endpoint failed.\n"
-                    f"  This suggests the API is running but the endpoint may have issues.\n"
-                )
-            
-            error_msg += f"  Original error: {str(e)}"
-            
-            raise FirecrawlConnectionError(error_msg)
-        except requests.exceptions.Timeout as e:
-            logger.error(f"Timeout scraping {url}: {e}")
-            raise FirecrawlTimeoutError(f"Timeout scraping {url}: {str(e)}")
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error scraping {url}: {e.response.status_code} - {e}")
-            raise FirecrawlAPIError(
-                f"HTTP error scraping {url}: {e.response.status_code} - {str(e)}"
-            )
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error scraping {url}: {e}")
-            raise FirecrawlAPIError(f"Error scraping {url}: {str(e)}")
+        # Retry on 408 errors with longer timeout
+        max_retries = 3
+        retry_delays = [2, 5, 10]
+        timeouts = [90, 120, 180]  # Increasing timeouts for retries
+        
+        for attempt in range(max_retries):
+            try:
+                current_timeout = timeouts[min(attempt, len(timeouts) - 1)]
+                response = self.session.post(endpoint, json=payload, timeout=current_timeout)
+                response.raise_for_status()
+                data = response.json()
+                logger.info(f"Successfully scraped: {url}")
+                return data
+            except requests.exceptions.HTTPError as e:
+                # Handle 408 Request Timeout specifically
+                if e.response.status_code == 408:
+                    if attempt < max_retries - 1:
+                        delay = retry_delays[attempt]
+                        logger.warning(
+                            f"408 Request Timeout scraping {url} (attempt {attempt + 1}/{max_retries}). "
+                            f"Retrying with longer timeout ({current_timeout}s) in {delay}s..."
+                        )
+                        print(f"⚠️  Request timeout (408) - retrying with longer timeout... ({attempt + 1}/{max_retries})")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        # Final attempt failed
+                        logger.error(f"408 Request Timeout scraping {url} after {max_retries} attempts")
+                        raise FirecrawlTimeoutError(
+                            f"Request timeout (408) scraping {url} after {max_retries} attempts. "
+                            f"The page may be too slow to load. Try:\n"
+                            f"  - Increase wait_for parameter\n"
+                            f"  - Check if the URL is accessible\n"
+                            f"  - The website may be blocking requests"
+                        )
+                else:
+                    # Other HTTP errors - don't retry
+                    logger.error(f"HTTP error scraping {url}: {e.response.status_code} - {e}")
+                    raise FirecrawlAPIError(
+                        f"HTTP error scraping {url}: {e.response.status_code} - {str(e)}"
+                    )
+            except requests.exceptions.ConnectionError as e:
+                if attempt < max_retries - 1:
+                    delay = retry_delays[attempt]
+                    logger.warning(
+                        f"Connection error scraping {url} (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying in {delay}s..."
+                    )
+                    print(f"⚠️  Connection error - retrying... ({attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    # Final attempt failed
+                    logger.error(f"Connection error scraping {url}: {e}")
+                    
+                    # Try to check if API is accessible
+                    is_accessible = self.check_connection()
+                    
+                    error_msg = (
+                        f"Cannot connect to Firecrawl API at {self.config.api_url}.\n"
+                        f"  Attempted endpoint: {endpoint}\n"
+                    )
+                    
+                    if not is_accessible:
+                        error_msg += (
+                            f"  Health check failed - API is not accessible.\n"
+                            f"  This may be due to:\n"
+                            f"    - Firecrawl is not running\n"
+                            f"    - Network connectivity issues (especially from VM)\n"
+                            f"    - Firewall blocking connections\n"
+                            f"    - Wrong API URL (check if accessible from this machine)\n"
+                            f"  Try: curl {self.config.api_url}/health\n"
+                        )
+                    else:
+                        error_msg += (
+                            f"  Health check passed, but scrape endpoint failed.\n"
+                            f"  This suggests the API is running but the endpoint may have issues.\n"
+                        )
+                    
+                    error_msg += f"  Original error: {str(e)}"
+                    
+                    raise FirecrawlConnectionError(error_msg)
+            except requests.exceptions.Timeout as e:
+                if attempt < max_retries - 1:
+                    delay = retry_delays[attempt]
+                    current_timeout = timeouts[min(attempt + 1, len(timeouts) - 1)]
+                    logger.warning(
+                        f"Connection timeout scraping {url} (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying with longer timeout ({current_timeout}s) in {delay}s..."
+                    )
+                    print(f"⚠️  Connection timeout - retrying with longer timeout... ({attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Timeout scraping {url} after {max_retries} attempts: {e}")
+                    raise FirecrawlTimeoutError(
+                        f"Timeout scraping {url} after {max_retries} attempts. "
+                        f"The page may be too slow to load or unreachable."
+                    )
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    delay = retry_delays[attempt]
+                    logger.warning(
+                        f"Request error scraping {url} (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying in {delay}s..."
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Request error scraping {url}: {e}")
+                    raise FirecrawlAPIError(f"Error scraping {url}: {str(e)}")
+        
+        # This should never be reached, but just in case
+        raise FirecrawlAPIError(f"Unexpected error scraping {url}")
     
     def crawl_website(
         self,
