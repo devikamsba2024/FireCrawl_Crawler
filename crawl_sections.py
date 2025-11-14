@@ -31,13 +31,14 @@ def list_sections(sections_config):
     for key, section in sections_config["sections"].items():
         max_depth = section.get('max_depth', 'auto')
         limit = section.get('limit', 'auto')
-        timeout = section.get('timeout', 'auto')
+        timeout = section.get('timeout', None)
         
         print(f"\n{section['name']} ({key})")
         print(f"  URL: {section['url']}")
         print(f"  Output: {section['output_dir']}")
-        print(f"  Limits: max_depth={max_depth}, limit={limit}, timeout={timeout if timeout != 'auto' else 'auto'}s")
-        if max_depth == 'auto' or limit == 'auto' or timeout == 'auto':
+        timeout_str = str(timeout) + "s" if timeout is not None else "None (no timeout)"
+        print(f"  Limits: max_depth={max_depth}, limit={limit}, timeout={timeout_str}")
+        if max_depth == 'auto' or limit == 'auto':
             print(f"  ⚠️  Auto-detection: Will analyze sitemap to determine values")
         print(f"  Schedule: {section['schedule']}")
         print(f"  Description: {section['description']}")
@@ -52,12 +53,13 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
     
     section = sections_config["sections"][section_key]
     
-    # Auto-detect limit, depth, and timeout from sitemap if not set
+    # Auto-detect limit and depth from sitemap if not set
+    # Timeout is optional - None means wait indefinitely
     max_depth = section.get('max_depth')
     limit = section.get('limit')
-    timeout = section.get('timeout')
+    timeout = section.get('timeout')  # None means no timeout
     
-    if max_depth is None or limit is None or timeout is None:
+    if max_depth is None or limit is None:
         print(f"\n🔍 Auto-detecting crawl parameters from sitemap...")
         from firecrawl_crawler import SitemapParser
         
@@ -76,27 +78,12 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
             if limit is None:
                 limit = analysis['page_count']
                 print(f"  ✓ Detected page count: {limit}")
-            if timeout is None:
-                # Calculate timeout based on page count and depth
-                # Formula: base_time + (pages * time_per_page) + (depth * depth_factor)
-                base_time = 30  # 30 seconds base time
-                time_per_page = 3  # 3 seconds per page (conservative estimate)
-                depth_factor = 10  # 10 seconds per depth level
-                
-                calculated_timeout = base_time + (limit * time_per_page) + (max_depth * depth_factor)
-                # Add 50% buffer for safety
-                timeout = int(calculated_timeout * 1.5)
-                # Minimum 60 seconds, maximum 3600 seconds (1 hour)
-                timeout = max(60, min(timeout, 3600))
-                print(f"  ✓ Calculated timeout: {timeout}s ({timeout//60}m {timeout%60}s)")
         else:
             print(f"  ⚠️  No pages found in sitemap, using defaults")
             if max_depth is None:
                 max_depth = 2
             if limit is None:
                 limit = 50
-            if timeout is None:
-                timeout = 600  # Default 10 minutes
         print()
     
     print(f"\n{'='*80}")
@@ -105,7 +92,10 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
     print(f"URL: {section['url']}")
     print(f"Output: {section['output_dir']}")
     print(f"Max Depth: {max_depth}, Limit: {limit}")
-    print(f"Timeout: {timeout}s ({timeout//60}m {timeout%60}s)")
+    if timeout is None:
+        print(f"Timeout: None (wait indefinitely)")
+    else:
+        print(f"Timeout: {timeout}s ({timeout//60}m {timeout%60}s)")
     print()
     
     # Setup config
@@ -117,6 +107,19 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
     
     client = FirecrawlClient(config)
     storage = MarkdownStorage(config.output_dir)
+    
+    # Check connection before starting
+    print(f"Checking API connection to {config.api_url}...")
+    if not client.check_connection():
+        print(f"\n❌ Error: Cannot connect to Firecrawl API at {config.api_url}")
+        print(f"\n💡 Troubleshooting steps:")
+        print(f"  1. Verify Firecrawl is running: curl {config.api_url}/health")
+        print(f"  2. Check if API URL is correct and accessible from this machine")
+        print(f"  3. For VM: Ensure network connectivity and firewall settings")
+        print(f"  4. Check if Firecrawl is running on a different host/port")
+        sys.exit(1)
+    else:
+        print(f"✓ API connection successful")
     
     try:
         # Start crawl (use auto-detected values if available)
@@ -132,19 +135,49 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
         print("Waiting for crawl to complete...\n")
         
         # Wait for completion with configured timeout (already set above)
+        # Enable incremental saving so files are saved as they come in
+        print("Saving pages incrementally as they are scraped...\n")
         result = client.wait_for_crawl(
             job_id=job_id,
             max_wait_time=timeout,
-            poll_interval=5
+            poll_interval=5,
+            incremental_save=storage  # Pass storage for incremental saving
         )
         
-        # Save pages
+        # Save pages (any that weren't saved incrementally)
         pages = result.get("data", [])
         if pages:
-            print(f"\nCrawl completed! Found {len(pages)} pages.")
-            print("Saving pages...\n")
-            saved_files = storage.save_multiple_pages(pages, create_index=True)
-            print(f"\n✓ Successfully saved {len(saved_files)} pages to: {config.output_dir}")
+            # Check if we need to save any remaining pages
+            saved_urls = set(storage.get_scraped_urls())
+            remaining_pages = [
+                p for p in pages 
+                if (p.get("metadata", {}).get("url") or p.get("url", "unknown")) not in saved_urls
+            ]
+            
+            if remaining_pages:
+                print(f"\nCrawl completed! Saving {len(remaining_pages)} remaining pages...")
+                saved_files = storage.save_multiple_pages(remaining_pages, create_index=True)
+                print(f"\n✓ Successfully saved {len(saved_files)} additional pages to: {config.output_dir}")
+            else:
+                print(f"\nCrawl completed! All {len(pages)} pages were already saved incrementally.")
+            
+            # Always update index at the end
+            all_saved_pages = [p for p in pages if (p.get("metadata", {}).get("url") or p.get("url", "unknown")) in storage.get_scraped_urls()]
+            if all_saved_pages:
+                index_entries = []
+                for page in all_saved_pages:
+                    title = page.get("metadata", {}).get("title", "Untitled")
+                    url = page.get("metadata", {}).get("url") or page.get("url", "")
+                    page_info = storage.get_page_info(url)
+                    if page_info:
+                        index_entries.append({
+                            "title": title,
+                            "url": url,
+                            "file": page_info.get("file", "")
+                        })
+                if index_entries:
+                    storage._create_index_file(index_entries)
+            
             print(f"✓ Metadata saved to: {config.output_dir}/.scrape_metadata.json")
         else:
             status = result.get("status", "unknown")

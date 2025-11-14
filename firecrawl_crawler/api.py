@@ -25,6 +25,29 @@ class FirecrawlClient:
         self.session.headers.update(config.get_headers())
         logger.debug(f"Initialized FirecrawlClient with URL: {config.api_url}")
     
+    def check_connection(self) -> bool:
+        """
+        Check if Firecrawl API is accessible.
+        
+        Returns:
+            True if API is accessible, False otherwise
+        """
+        try:
+            health_url = f"{self.config.api_url}/health"
+            response = self.session.get(health_url, timeout=5)
+            response.raise_for_status()
+            logger.debug(f"Health check successful: {health_url}")
+            return True
+        except requests.exceptions.ConnectionError as e:
+            logger.debug(f"Health check failed - connection error: {e}")
+            return False
+        except requests.exceptions.Timeout:
+            logger.debug(f"Health check failed - timeout")
+            return False
+        except Exception as e:
+            logger.debug(f"Health check failed - {type(e).__name__}: {e}")
+            return False
+    
     def scrape_url(
         self,
         url: str,
@@ -66,10 +89,34 @@ class FirecrawlClient:
             return data
         except requests.exceptions.ConnectionError as e:
             logger.error(f"Connection error scraping {url}: {e}")
-            raise FirecrawlConnectionError(
-                f"Cannot connect to Firecrawl at {self.config.api_url}. "
-                f"Is it running? Error: {str(e)}"
+            
+            # Try to check if API is accessible
+            is_accessible = self.check_connection()
+            
+            error_msg = (
+                f"Cannot connect to Firecrawl API at {self.config.api_url}.\n"
+                f"  Attempted endpoint: {endpoint}\n"
             )
+            
+            if not is_accessible:
+                error_msg += (
+                    f"  Health check failed - API is not accessible.\n"
+                    f"  This may be due to:\n"
+                    f"    - Firecrawl is not running\n"
+                    f"    - Network connectivity issues (especially from VM)\n"
+                    f"    - Firewall blocking connections\n"
+                    f"    - Wrong API URL (check if accessible from this machine)\n"
+                    f"  Try: curl {self.config.api_url}/health\n"
+                )
+            else:
+                error_msg += (
+                    f"  Health check passed, but scrape endpoint failed.\n"
+                    f"  This suggests the API is running but the endpoint may have issues.\n"
+                )
+            
+            error_msg += f"  Original error: {str(e)}"
+            
+            raise FirecrawlConnectionError(error_msg)
         except requests.exceptions.Timeout as e:
             logger.error(f"Timeout scraping {url}: {e}")
             raise FirecrawlTimeoutError(f"Timeout scraping {url}: {str(e)}")
@@ -130,10 +177,34 @@ class FirecrawlClient:
             return job_id
         except requests.exceptions.ConnectionError as e:
             logger.error(f"Connection error starting crawl for {url}: {e}")
-            raise FirecrawlConnectionError(
-                f"Cannot connect to Firecrawl at {self.config.api_url}. "
-                f"Is it running? Error: {str(e)}"
+            
+            # Try to check if API is accessible
+            is_accessible = self.check_connection()
+            
+            error_msg = (
+                f"Cannot connect to Firecrawl API at {self.config.api_url}.\n"
+                f"  Attempted endpoint: {endpoint}\n"
             )
+            
+            if not is_accessible:
+                error_msg += (
+                    f"  Health check failed - API is not accessible.\n"
+                    f"  This may be due to:\n"
+                    f"    - Firecrawl is not running\n"
+                    f"    - Network connectivity issues (especially from VM)\n"
+                    f"    - Firewall blocking connections\n"
+                    f"    - Wrong API URL (check if accessible from this machine)\n"
+                    f"  Try: curl {self.config.api_url}/health\n"
+                )
+            else:
+                error_msg += (
+                    f"  Health check passed, but crawl endpoint failed.\n"
+                    f"  This suggests the API is running but the endpoint may have issues.\n"
+                )
+            
+            error_msg += f"  Original error: {str(e)}"
+            
+            raise FirecrawlConnectionError(error_msg)
         except requests.exceptions.Timeout as e:
             logger.error(f"Timeout starting crawl for {url}: {e}")
             raise FirecrawlTimeoutError(f"Timeout starting crawl for {url}: {str(e)}")
@@ -146,12 +217,13 @@ class FirecrawlClient:
             logger.error(f"Request error starting crawl for {url}: {e}")
             raise FirecrawlAPIError(f"Error starting crawl for {url}: {str(e)}")
     
-    def get_crawl_status(self, job_id: str) -> Dict[str, Any]:
+    def get_crawl_status(self, job_id: str, retry_on_connection_error: bool = True) -> Dict[str, Any]:
         """
         Get status of a crawl job.
         
         Args:
             job_id: Job ID from crawl_website
+            retry_on_connection_error: If True, retry on connection errors (default: True)
             
         Returns:
             Job status and data
@@ -160,51 +232,149 @@ class FirecrawlClient:
         
         logger.debug(f"Checking crawl status for job: {job_id}")
         
-        try:
-            response = self.session.get(endpoint, timeout=30)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connection error getting status for {job_id}: {e}")
-            raise FirecrawlConnectionError(
-                f"Cannot connect to Firecrawl at {self.config.api_url}: {str(e)}"
-            )
-        except requests.exceptions.Timeout as e:
-            logger.error(f"Timeout getting status for {job_id}: {e}")
-            raise FirecrawlTimeoutError(f"Timeout getting crawl status for job {job_id}: {str(e)}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error getting status for {job_id}: {e}")
-            raise FirecrawlAPIError(f"Error getting crawl status for job {job_id}: {str(e)}")
+        max_retries = 3 if retry_on_connection_error else 1
+        retry_delays = [2, 5, 10]  # Exponential backoff in seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(endpoint, timeout=30)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.ConnectionError as e:
+                if attempt < max_retries - 1:
+                    # Retry transient connection errors
+                    delay = retry_delays[attempt]
+                    logger.warning(
+                        f"Connection error getting status for {job_id} (attempt {attempt + 1}/{max_retries}). "
+                        f"Retrying in {delay}s..."
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    # Final attempt failed
+                    logger.error(f"Connection error getting status for {job_id} after {max_retries} attempts: {e}")
+                    
+                    # Try to check if API is accessible
+                    is_accessible = self.check_connection()
+                    
+                    error_msg = (
+                        f"Cannot connect to Firecrawl API at {self.config.api_url} after {max_retries} attempts.\n"
+                        f"  Attempted endpoint: {endpoint}\n"
+                    )
+                    
+                    if not is_accessible:
+                        error_msg += (
+                            f"  Health check failed - API connection lost during crawl.\n"
+                            f"  This may indicate:\n"
+                            f"    - Firecrawl service stopped/crashed\n"
+                            f"    - Network connectivity issues (especially from VM)\n"
+                            f"    - Job {job_id} may still be running on server\n"
+                        )
+                    else:
+                        error_msg += (
+                            f"  Health check passed, but status endpoint failed.\n"
+                            f"  The API is accessible but status check failed.\n"
+                        )
+                    
+                    error_msg += f"  Original error: {str(e)}"
+                    
+                    raise FirecrawlConnectionError(error_msg)
+            except requests.exceptions.Timeout as e:
+                logger.error(f"Timeout getting status for {job_id}: {e}")
+                raise FirecrawlTimeoutError(f"Timeout getting crawl status for job {job_id}: {str(e)}")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error getting status for {job_id}: {e}")
+                raise FirecrawlAPIError(f"Error getting crawl status for job {job_id}: {str(e)}")
+        
+        # This should never be reached, but just in case
+        raise FirecrawlAPIError(f"Unexpected error getting crawl status for job {job_id}")
     
     def wait_for_crawl(
         self,
         job_id: str,
-        max_wait_time: int = 300,
-        poll_interval: int = 5
+        max_wait_time: Optional[int] = None,
+        poll_interval: int = 5,
+        incremental_save: Optional[Any] = None  # MarkdownStorage instance for incremental saving
     ) -> Dict[str, Any]:
         """
         Wait for a crawl job to complete.
         
         Args:
             job_id: Job ID from crawl_website
-            max_wait_time: Maximum time to wait (seconds)
+            max_wait_time: Maximum time to wait (seconds). None means wait indefinitely.
             poll_interval: Time between status checks (seconds)
+            incremental_save: Optional MarkdownStorage instance to save pages as they come in.
+                            If provided, pages will be saved incrementally during status checks.
             
         Returns:
             Final job data with all scraped pages
         """
         start_time = time.time()
-        logger.info(f"Waiting for crawl job {job_id} to complete (max {max_wait_time}s)")
+        if max_wait_time is None:
+            logger.info(f"Waiting for crawl job {job_id} to complete (no timeout)")
+        else:
+            logger.info(f"Waiting for crawl job {job_id} to complete (max {max_wait_time}s)")
         completed_without_data_count = 0  # Track consecutive "completed" status with no data
         max_completed_without_data = 3  # Max times to see "completed" without data before returning
+        consecutive_connection_errors = 0  # Track consecutive connection errors
+        max_consecutive_connection_errors = 5  # Max connection errors before giving up
+        saved_page_urls = set()  # Track which pages we've already saved for incremental saving
         
-        while time.time() - start_time < max_wait_time:
-            status_data = self.get_crawl_status(job_id)
+        while max_wait_time is None or time.time() - start_time < max_wait_time:
+            try:
+                status_data = self.get_crawl_status(job_id, retry_on_connection_error=True)
+                consecutive_connection_errors = 0  # Reset on successful connection
+            except FirecrawlConnectionError as e:
+                consecutive_connection_errors += 1
+                
+                if consecutive_connection_errors >= max_consecutive_connection_errors:
+                    logger.error(
+                        f"Crawl job {job_id} - {max_consecutive_connection_errors} consecutive connection errors. "
+                        f"Giving up. Job may still be running on server."
+                    )
+                    raise FirecrawlConnectionError(
+                        f"Crawl job {job_id} failed due to persistent connection issues.\n"
+                        f"  The job may still be running on the server.\n"
+                        f"  You can check status later with: {self.config.api_url}/v1/crawl/{job_id}\n"
+                        f"  Original error: {str(e)}"
+                    )
+                
+                # Log warning but continue trying
+                logger.warning(
+                    f"Connection error checking status for {job_id} "
+                    f"({consecutive_connection_errors}/{max_consecutive_connection_errors}). "
+                    f"Will retry..."
+                )
+                print(f"Crawl status: connection error, retrying... ({consecutive_connection_errors}/{max_consecutive_connection_errors})")
+                time.sleep(poll_interval * 2)  # Wait longer before retrying
+                continue
+            
             status = status_data.get("status")
+            
+            # Check for partial data and save incrementally if enabled
+            pages = status_data.get("data", [])
+            if pages and incremental_save:
+                new_pages = []
+                for p in pages:
+                    page_url = p.get("metadata", {}).get("url") or p.get("url", "unknown")
+                    if page_url not in saved_page_urls:
+                        new_pages.append(p)
+                
+                if new_pages:
+                    try:
+                        print(f"  Saving {len(new_pages)} new page(s) incrementally...")
+                        for page in new_pages:
+                            page_url = page.get("metadata", {}).get("url") or page.get("url", "unknown")
+                            if page_url not in saved_page_urls:
+                                incremental_save.save_single_page(page)
+                                saved_page_urls.add(page_url)
+                                logger.info(f"Incrementally saved page: {page_url}")
+                    except Exception as e:
+                        logger.warning(f"Error during incremental save: {e}")
+                        # Continue anyway
             
             if status == "completed":
                 # Check if data is available (sometimes completed but data not ready yet)
-                pages = status_data.get("data", [])
                 total_pages = status_data.get("total", 0)
                 stats = status_data.get("stats", {})
                 error = status_data.get("error")
@@ -221,6 +391,22 @@ class FirecrawlClient:
                     )
                 
                 if pages:
+                    # Save any remaining pages that weren't saved incrementally
+                    if incremental_save:
+                        remaining_pages = []
+                        for p in pages:
+                            page_url = p.get("metadata", {}).get("url") or p.get("url", "unknown")
+                            if page_url not in saved_page_urls:
+                                remaining_pages.append(p)
+                        
+                        if remaining_pages:
+                            try:
+                                print(f"  Saving {len(remaining_pages)} remaining page(s)...")
+                                for page in remaining_pages:
+                                    incremental_save.save_single_page(page)
+                            except Exception as e:
+                                logger.warning(f"Error saving remaining pages: {e}")
+                    
                     logger.info(f"Crawl job {job_id} completed successfully with {len(pages)} pages")
                     return status_data
                 else:
@@ -244,11 +430,14 @@ class FirecrawlClient:
                         
                         # Keep polling until data is available or timeout
                         data_wait_start = time.time()
-                        remaining_time = max_wait_time - (time.time() - start_time)
-                        max_data_wait = min(60, remaining_time)  # Wait up to 60s or remaining time
+                        if max_wait_time is None:
+                            max_data_wait = 60  # Wait up to 60s for data when no timeout
+                        else:
+                            remaining_time = max_wait_time - (time.time() - start_time)
+                            max_data_wait = min(60, remaining_time)  # Wait up to 60s or remaining time
                         
                         pages_found = False
-                        while time.time() - data_wait_start < max_data_wait and time.time() - start_time < max_wait_time:
+                        while (max_wait_time is None or time.time() - start_time < max_wait_time) and time.time() - data_wait_start < max_data_wait:
                             status_data = self.get_crawl_status(job_id)
                             pages = status_data.get("data", [])
                             current_status = status_data.get("status", status)
@@ -319,9 +508,18 @@ class FirecrawlClient:
             print(f"Crawl status: {status}, waiting...")
             time.sleep(poll_interval)
         
-        logger.error(f"Crawl job {job_id} timed out after {max_wait_time}s")
-        raise FirecrawlTimeoutError(
-            f"Crawl job {job_id} timed out after {max_wait_time}s. "
-            f"Last status: {status_data.get('status', 'unknown')}"
-        )
+        # Only timeout if max_wait_time was set
+        if max_wait_time is not None:
+            logger.error(f"Crawl job {job_id} timed out after {max_wait_time}s")
+            raise FirecrawlTimeoutError(
+                f"Crawl job {job_id} timed out after {max_wait_time}s. "
+                f"Last status: {status_data.get('status', 'unknown')}"
+            )
+        else:
+            # This should never happen (infinite loop broken above), but just in case
+            logger.error(f"Crawl job {job_id} exited wait loop unexpectedly")
+            raise FirecrawlAPIError(
+                f"Crawl job {job_id} wait loop exited unexpectedly. "
+                f"Last status: {status_data.get('status', 'unknown')}"
+            )
 

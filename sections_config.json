@@ -6,7 +6,6 @@
       "output_dir": "output/onestop",
       "max_depth": 2,
       "limit": 50,
-      "timeout": 300,
       "schedule": "daily",
       "description": "Student services and portal"
     },
@@ -16,7 +15,6 @@
       "output_dir": "output/about",
       "max_depth": 2,
       "limit": 100,
-      "timeout": 600,
       "schedule": "weekly",
       "description": "About Wichita State"
     },
@@ -26,7 +24,6 @@
       "output_dir": "output/faculty_staff",
       "max_depth": 2,
       "limit": 200,
-      "timeout": 900,
       "schedule": "monthly",
       "description": "Faculty and staff information"
     },
@@ -43,7 +40,6 @@
       "output_dir": "output/leadership",
       "max_depth": 2,
       "limit": 50,
-      "timeout": 300,
       "schedule": "quarterly",
       "description": "University leadership and administration"
     },
@@ -53,7 +49,6 @@
       "output_dir": "output/research",
       "max_depth": 3,
       "limit": 200,
-      "timeout": 1200,
       "schedule": "monthly",
       "description": "Research programs and initiatives"
     },
@@ -72,7 +67,6 @@
       "output_dir": "output/academics",
       "max_depth": 2,
       "limit": 300,
-      "timeout": 1800,
       "schedule": "weekly",
       "description": "Academic programs and departments"
     },
@@ -82,7 +76,6 @@
       "output_dir": "output/admissions",
       "max_depth": 2,
       "limit": 100,
-      "timeout": 600,
       "schedule": "daily",
       "description": "Admissions information and requirements"
     },
@@ -92,7 +85,6 @@
       "output_dir": "output/graduate_school",
       "max_depth": 3,
       "limit": 100,
-      "timeout": 600,
       "schedule": "weekly",
       "description": "Graduate programs and requirements"
     }
