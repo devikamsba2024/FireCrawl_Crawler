@@ -32,12 +32,21 @@ class FirecrawlClient:
         Returns:
             True if API is accessible, False otherwise
         """
+        # Try health endpoint first
         try:
             health_url = f"{self.config.api_url}/health"
             response = self.session.get(health_url, timeout=5)
             response.raise_for_status()
             logger.debug(f"Health check successful: {health_url}")
             return True
+        except requests.exceptions.HTTPError as e:
+            # If health endpoint doesn't exist (404), try alternative check
+            if e.response.status_code == 404:
+                logger.debug(f"Health endpoint not found (404), trying alternative check")
+                # Try a simple API endpoint to verify API is accessible
+                return self._check_connection_alternative()
+            logger.debug(f"Health check failed - HTTP error: {e.response.status_code}")
+            return False
         except requests.exceptions.ConnectionError as e:
             logger.debug(f"Health check failed - connection error: {e}")
             return False
@@ -46,6 +55,52 @@ class FirecrawlClient:
             return False
         except Exception as e:
             logger.debug(f"Health check failed - {type(e).__name__}: {e}")
+            # Try alternative check as fallback
+            return self._check_connection_alternative()
+    
+    def _check_connection_alternative(self) -> bool:
+        """
+        Alternative connection check if health endpoint doesn't exist.
+        Tries to access the API root or a known endpoint.
+        
+        Returns:
+            True if API appears to be accessible, False otherwise
+        """
+        try:
+            # Try accessing the API root or a simple endpoint
+            # Many APIs respond to root with some info
+            test_urls = [
+                f"{self.config.api_url}/",
+                f"{self.config.api_url}/v1",
+            ]
+            
+            for test_url in test_urls:
+                try:
+                    response = self.session.get(test_url, timeout=5)
+                    # If we get any response (not connection error), API is likely accessible
+                    logger.debug(f"Alternative check successful: {test_url} (status: {response.status_code})")
+                    return True
+                except requests.exceptions.HTTPError:
+                    # HTTP errors (like 404) mean server is responding - that's good
+                    logger.debug(f"Alternative check - server responding at {test_url}")
+                    return True
+                except requests.exceptions.ConnectionError:
+                    continue
+                except requests.exceptions.Timeout:
+                    continue
+            
+            # If all endpoints fail, try a HEAD request to see if server responds at all
+            try:
+                response = self.session.head(f"{self.config.api_url}/", timeout=5)
+                logger.debug(f"Alternative check successful via HEAD request")
+                return True
+            except:
+                pass
+            
+            logger.debug(f"Alternative connection check failed")
+            return False
+        except Exception as e:
+            logger.debug(f"Alternative connection check error: {e}")
             return False
     
     def scrape_url(
