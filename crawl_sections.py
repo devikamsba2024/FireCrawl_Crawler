@@ -8,6 +8,9 @@ import json
 import sys
 from pathlib import Path
 from firecrawl_crawler import Config, FirecrawlClient, MarkdownStorage
+from firecrawl_crawler.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def load_sections_config(config_file: str = "sections_config.json"):
@@ -147,15 +150,30 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
             status = result.get("status", "unknown")
             total_pages = result.get("total", 0)
             stats = result.get("stats", {})
+            error = result.get("error")
             # Use the job_id from crawl start, fallback to result if needed
             retry_job_id = result.get("id") or result.get("jobId") or job_id
             
             print(f"\n⚠️  Warning: Crawl completed with status '{status}' but no pages found.")
             print(f"  Job ID: {retry_job_id}")
+            print(f"  API URL: {config.api_url}")
+            print(f"  Response keys: {list(result.keys())}")
+            
             if total_pages > 0:
-                print(f"  Note: API reports {total_pages} total pages, but data array is empty.")
+                print(f"  ⚠️  API reports {total_pages} total pages, but data array is empty.")
+                print(f"      This indicates a Firecrawl API issue - data not ready or lost.")
+            elif total_pages == 0:
+                print(f"  ⚠️  API reports 0 total pages - crawl may have found no matching pages.")
+            
+            if error:
+                print(f"  ❌ API Error field: {error}")
+            
             if stats:
                 print(f"  Stats: {stats}")
+            
+            # Log full response for debugging (especially useful for VM troubleshooting)
+            logger.warning(f"Full API response (no data): {json.dumps(result, indent=2, default=str)}")
+            print(f"\n  🔍 Full API response logged to: logs/crawler.log (DEBUG level)")
             
             # Check if we can get the job status again (might have data now)
             if retry_job_id and retry_job_id != "unknown":
@@ -176,12 +194,14 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
                         print("  - No pages matched the crawl criteria (depth/limit)")
                         print("  - The website structure changed")
                         print("  - Network/API connectivity issues from VM")
-                        print(f"\n💡 Suggestions:")
+                        print(f"\n💡 Suggestions for VM troubleshooting:")
                         print(f"  - Check logs: tail -f logs/crawler.log")
+                        print(f"  - Verify Firecrawl API is accessible: curl {config.api_url}/health")
+                        print(f"  - Check if API URL is correct (should be accessible from VM)")
+                        print(f"  - Try testing with single page: python3 main.py scrape {section['url']}")
+                        print(f"  - Check network connectivity: ping/curl to {config.api_url}")
+                        print(f"  - Manually check job status: curl {config.api_url}/v1/crawl/{retry_job_id}")
                         print(f"  - Try running again: python3 crawl_sections.py crawl {section_key}")
-                        print(f"  - Verify URL is accessible: {section['url']}")
-                        print(f"  - Check Firecrawl API connectivity: curl {config.api_url}/health")
-                        print(f"  - Manually check job status later with job ID: {retry_job_id}")
                         logger.warning(f"Crawl completed but no pages found for {section['url']}")
                         logger.debug(f"Full result: {result}")
                         logger.debug(f"Retry result: {retry_result}")
