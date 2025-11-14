@@ -147,47 +147,55 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
             status = result.get("status", "unknown")
             total_pages = result.get("total", 0)
             stats = result.get("stats", {})
-            job_id = result.get("id") or result.get("jobId", "unknown")
+            # Use the job_id from crawl start, fallback to result if needed
+            retry_job_id = result.get("id") or result.get("jobId") or job_id
             
             print(f"\n⚠️  Warning: Crawl completed with status '{status}' but no pages found.")
-            print(f"  Job ID: {job_id}")
+            print(f"  Job ID: {retry_job_id}")
             if total_pages > 0:
                 print(f"  Note: API reports {total_pages} total pages, but data array is empty.")
             if stats:
                 print(f"  Stats: {stats}")
             
             # Check if we can get the job status again (might have data now)
-            print(f"\n🔄 Attempting to fetch job status again (data might be ready now)...")
-            try:
-                retry_result = client.get_crawl_status(job_id)
-                retry_pages = retry_result.get("data", [])
-                if retry_pages:
-                    print(f"  ✓ Found {len(retry_pages)} pages on retry!")
-                    print("Saving pages...\n")
-                    saved_files = storage.save_multiple_pages(retry_pages, create_index=True)
-                    print(f"\n✓ Successfully saved {len(saved_files)} pages to: {config.output_dir}")
-                    print(f"✓ Metadata saved to: {config.output_dir}/.scrape_metadata.json")
-                else:
-                    print(f"  ⚠️  Still no pages in data array")
-                    print("\nThis might happen if:")
-                    print("  - The crawl is still processing (check again later)")
-                    print("  - No pages matched the crawl criteria (depth/limit)")
-                    print("  - The website structure changed")
-                    print("  - Network/API connectivity issues from VM")
-                    print(f"\n💡 Suggestions:")
-                    print(f"  - Check logs: tail -f logs/crawler.log")
-                    print(f"  - Try running again: python3 crawl_sections.py crawl {section_key}")
-                    print(f"  - Verify URL is accessible: {section['url']}")
-                    print(f"  - Check Firecrawl API connectivity: curl {config.api_url}/health")
-                    print(f"  - Manually check job status later with job ID: {job_id}")
-                    logger.warning(f"Crawl completed but no pages found for {section['url']}")
-                    logger.debug(f"Full result: {result}")
-                    logger.debug(f"Retry result: {retry_result}")
-            except Exception as e:
-                print(f"  ✗ Error checking job status: {e}")
-                print(f"\n💡 You can manually check the job status later:")
-                print(f"  Job ID: {job_id}")
-                print(f"  API URL: {config.api_url}/v1/crawl/{job_id}")
+            if retry_job_id and retry_job_id != "unknown":
+                print(f"\n🔄 Attempting to fetch job status again (data might be ready now)...")
+                try:
+                    retry_result = client.get_crawl_status(retry_job_id)
+                    retry_pages = retry_result.get("data", [])
+                    if retry_pages:
+                        print(f"  ✓ Found {len(retry_pages)} pages on retry!")
+                        print("Saving pages...\n")
+                        saved_files = storage.save_multiple_pages(retry_pages, create_index=True)
+                        print(f"\n✓ Successfully saved {len(saved_files)} pages to: {config.output_dir}")
+                        print(f"✓ Metadata saved to: {config.output_dir}/.scrape_metadata.json")
+                    else:
+                        print(f"  ⚠️  Still no pages in data array")
+                        print("\nThis might happen if:")
+                        print("  - The crawl is still processing (check again later)")
+                        print("  - No pages matched the crawl criteria (depth/limit)")
+                        print("  - The website structure changed")
+                        print("  - Network/API connectivity issues from VM")
+                        print(f"\n💡 Suggestions:")
+                        print(f"  - Check logs: tail -f logs/crawler.log")
+                        print(f"  - Try running again: python3 crawl_sections.py crawl {section_key}")
+                        print(f"  - Verify URL is accessible: {section['url']}")
+                        print(f"  - Check Firecrawl API connectivity: curl {config.api_url}/health")
+                        print(f"  - Manually check job status later with job ID: {retry_job_id}")
+                        logger.warning(f"Crawl completed but no pages found for {section['url']}")
+                        logger.debug(f"Full result: {result}")
+                        logger.debug(f"Retry result: {retry_result}")
+                except Exception as e:
+                    print(f"  ✗ Error checking job status: {e}")
+                    print(f"\n💡 You can manually check the job status later:")
+                    print(f"  Job ID: {retry_job_id}")
+                    print(f"  API URL: {config.api_url}/v1/crawl/{retry_job_id}")
+            else:
+                print(f"\n⚠️  Cannot retry: Job ID not available")
+                print(f"  Original job_id variable: {job_id if 'job_id' in locals() else 'not found'}")
+                print(f"  Result keys: {list(result.keys())}")
+                logger.warning(f"Crawl completed but no pages found and job ID unavailable for {section['url']}")
+                logger.debug(f"Full result: {result}")
             # Don't exit with error - allow it to continue (might be temporary)
             
     except Exception as e:
