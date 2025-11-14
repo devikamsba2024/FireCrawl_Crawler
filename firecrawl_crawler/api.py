@@ -206,27 +206,50 @@ class FirecrawlClient:
                     logger.info(f"Crawl job {job_id} completed successfully with {len(pages)} pages")
                     return status_data
                 else:
-                    # Status is completed but no data yet - wait a bit more
-                    logger.debug(f"Crawl job {job_id} marked completed but no data yet, waiting...")
+                    # Status is completed but no data yet - keep waiting until data arrives
+                    logger.debug(f"Crawl job {job_id} marked completed but no data yet, waiting for data...")
                     print(f"Crawl status: {status} (waiting for data...), waiting...")
-                    time.sleep(poll_interval)
-                    # Give it a few more tries (up to 30 seconds)
-                    retry_count = 0
-                    max_retries = 6  # 6 * 5s = 30 seconds
-                    while retry_count < max_retries and time.time() - start_time < max_wait_time:
+                    
+                    # Keep polling until data is available or timeout
+                    data_wait_start = time.time()
+                    max_data_wait = min(60, max_wait_time - (time.time() - start_time))  # Wait up to 60s or remaining time
+                    
+                    while time.time() - data_wait_start < max_data_wait and time.time() - start_time < max_wait_time:
                         status_data = self.get_crawl_status(job_id)
                         pages = status_data.get("data", [])
+                        current_status = status_data.get("status", status)
+                        
                         if pages:
                             logger.info(f"Crawl job {job_id} data now available: {len(pages)} pages")
                             return status_data
-                        retry_count += 1
+                        
+                        # If status changed from completed, break and continue main loop
+                        if current_status != "completed":
+                            logger.debug(f"Status changed from completed to {current_status}, continuing...")
+                            break
+                        
+                        logger.debug(f"Still waiting for data... (elapsed: {int(time.time() - data_wait_start)}s)")
+                        print(f"Crawl status: {current_status} (waiting for data...), waiting...")
                         time.sleep(poll_interval)
                     
-                    # If still no data after retries, return what we have
-                    logger.warning(f"Crawl job {job_id} completed but no pages found after retries")
-                    logger.debug(f"Status data keys: {list(status_data.keys())}")
-                    logger.debug(f"Status data: {status_data}")
-                    return status_data
+                    # If we exhausted the wait time and still no data, check one more time
+                    final_status_data = self.get_crawl_status(job_id)
+                    final_pages = final_status_data.get("data", [])
+                    if final_pages:
+                        logger.info(f"Crawl job {job_id} data available on final check: {len(final_pages)} pages")
+                        return final_status_data
+                    
+                    # If still no data, this might be a real issue - but don't return completed without data
+                    # Instead, treat it as if still processing and let timeout handle it
+                    if not final_pages:
+                        logger.warning(f"Crawl job {job_id} marked completed but no data after extended wait")
+                        logger.debug(f"Status data keys: {list(status_data.keys())}")
+                        logger.debug(f"Status data: {status_data}")
+                        # Continue the loop - don't return completed without data
+                        # This will either timeout or eventually get data
+                        print(f"Crawl status: {status} (no data yet, continuing to wait...), waiting...")
+                        time.sleep(poll_interval)
+                        continue
             elif status == "failed":
                 error_msg = status_data.get("error", "Unknown error")
                 logger.error(f"Crawl job {job_id} failed: {error_msg}")
