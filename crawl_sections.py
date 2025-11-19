@@ -134,6 +134,16 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
         print(f"Crawl job started: {job_id}")
         print("Waiting for crawl to complete...\n")
         
+        # Store job_id in metadata for later retry if needed
+        if storage.metadata.get("last_job_id") != job_id:
+            storage.metadata["last_job_id"] = job_id
+            storage.metadata["last_crawl_url"] = section['url']
+            try:
+                storage._save_metadata()
+                logger.debug(f"Stored job_id {job_id} in metadata for {section_key}")
+            except Exception as e:
+                logger.warning(f"Could not save job_id to metadata: {e}")
+        
         # Wait for completion with configured timeout (already set above)
         # Enable incremental saving so files are saved as they come in
         print("Saving pages incrementally as they are scraped...\n")
@@ -259,6 +269,8 @@ def crawl_section(section_key, sections_config, api_url=None, api_key=None, forc
                         print(f"  - Check network connectivity: ping/curl to {config.api_url}")
                         print(f"  - Manually check job status: curl {config.api_url}/v1/crawl/{retry_job_id}")
                         print(f"  - Try running again: python3 crawl_sections.py crawl {section_key}")
+                        print(f"  - Use diagnostic tool: python3 diagnose_crawl.py section {section_key}")
+                        print(f"  - Retry fetch data: python3 diagnose_crawl.py retry {retry_job_id} --output {config.output_dir}")
                         logger.warning(f"Crawl completed but no pages found for {section['url']}")
                         logger.debug(f"Full result: {result}")
                         logger.debug(f"Retry result: {retry_result}")

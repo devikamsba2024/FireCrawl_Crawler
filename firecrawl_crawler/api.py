@@ -613,29 +613,39 @@ class FirecrawlClient:
                                 f"API reports {total_pages} total pages but data array is empty - "
                                 f"this may be a Firecrawl API timing issue"
                             )
-                            print(f"Crawl status: {status} (API reports {total_pages} pages but data not ready), waiting...")
+                            print(f"\n⚠️  Crawl status: {status} (API reports {total_pages} pages but data not ready)")
+                            print(f"   Waiting up to 5 minutes for data to become available...")
                         elif error:
                             logger.warning(f"API reports completed but has error field: {error}")
-                            print(f"Crawl status: {status} (has error: {error}), waiting...")
+                            print(f"\n⚠️  Crawl status: {status} (has error: {error})")
+                            print(f"   Waiting for data...")
                         else:
-                            print(f"Crawl status: {status} (waiting for data...), waiting...")
+                            print(f"\n⚠️  Crawl status: {status} (waiting for data...)")
+                            print(f"   Waiting up to 5 minutes for data to become available...")
                         
                         # Keep polling until data is available or timeout
+                        # Use longer wait time and more frequent polling when waiting for data
                         data_wait_start = time.time()
+                        data_poll_interval = min(3, poll_interval)  # Poll every 3s or less when waiting for data
+                        
                         if max_wait_time is None:
-                            max_data_wait = 60  # Wait up to 60s for data when no timeout
+                            max_data_wait = 300  # Wait up to 5 minutes for data when no timeout (increased from 3 min)
                         else:
                             remaining_time = max_wait_time - (time.time() - start_time)
-                            max_data_wait = min(60, remaining_time)  # Wait up to 60s or remaining time
+                            max_data_wait = min(300, remaining_time)  # Wait up to 5 minutes or remaining time (increased from 3 min)
                         
                         pages_found = False
+                        last_progress_time = data_wait_start
                         while (max_wait_time is None or time.time() - start_time < max_wait_time) and time.time() - data_wait_start < max_data_wait:
                             status_data = self.get_crawl_status(job_id)
                             pages = status_data.get("data", [])
                             current_status = status_data.get("status", status)
+                            current_total = status_data.get("total", total_pages)
+                            current_stats = status_data.get("stats", {})
                             
                             if pages:
                                 logger.info(f"Crawl job {job_id} data now available: {len(pages)} pages")
+                                print(f"\n✓ Data is now available! Found {len(pages)} page(s)")
                                 return status_data
                             
                             # If status changed from completed, break and continue main loop
@@ -644,18 +654,33 @@ class FirecrawlClient:
                                 completed_without_data_count = 0  # Reset counter
                                 break
                             
-                            logger.debug(f"Still waiting for data... (elapsed: {int(time.time() - data_wait_start)}s)")
-                            print(f"Crawl status: {current_status} (waiting for data...), waiting...")
-                            time.sleep(poll_interval)
+                            # Show progress every 10 seconds
+                            elapsed_data_wait = int(time.time() - data_wait_start)
+                            if time.time() - last_progress_time >= 10:
+                                if current_total > 0:
+                                    print(f"   Still waiting... ({elapsed_data_wait}s elapsed, API reports {current_total} pages)")
+                                else:
+                                    print(f"   Still waiting... ({elapsed_data_wait}s elapsed)")
+                                last_progress_time = time.time()
+                            
+                            logger.debug(f"Still waiting for data... (elapsed: {elapsed_data_wait}s, total: {current_total}, stats: {current_stats})")
+                            time.sleep(data_poll_interval)
                             pages_found = bool(pages)
                         
                         # Final check after waiting period
                         if not pages_found:
+                            elapsed_data_wait = int(time.time() - data_wait_start)
+                            print(f"\n   Final check after {elapsed_data_wait}s wait...")
                             final_status_data = self.get_crawl_status(job_id)
                             final_pages = final_status_data.get("data", [])
+                            final_total = final_status_data.get("total", 0)
                             if final_pages:
                                 logger.info(f"Crawl job {job_id} data available on final check: {len(final_pages)} pages")
+                                print(f"✓ Data is now available! Found {len(final_pages)} page(s)")
                                 return final_status_data
+                            elif final_total > 0:
+                                logger.warning(f"Final check: API still reports {final_total} pages but data array is empty")
+                                print(f"⚠️  API still reports {final_total} pages but data array is empty")
                             status_data = final_status_data
                     
                     # If we've seen "completed" without data multiple times, return the result anyway
@@ -676,15 +701,25 @@ class FirecrawlClient:
                         
                         # Print diagnostic info to console
                         print(f"\n⚠️  API returned 'completed' but no data after {completed_without_data_count} checks")
-                        print(f"    This is likely a Firecrawl API issue from your VM.")
+                        if final_total > 0:
+                            print(f"    API reports {final_total} total pages, but data array is empty")
+                            print(f"    This is a known Firecrawl API timing issue - data may arrive later")
+                        if final_stats:
+                            print(f"    Stats: {final_stats}")
+                        if final_error:
+                            print(f"    Error field: {final_error}")
                         print(f"    Check logs/crawler.log for full API response details.")
+                        print(f"    Note: If pages were saved incrementally during scraping, they are already saved.")
                         
                         # Return the status_data even without pages - caller can handle this
                         return status_data
                     
                     # Log warning but continue waiting (will check again on next iteration)
                     logger.warning(f"Crawl job {job_id} marked completed but no data after extended wait (attempt {completed_without_data_count}/{max_completed_without_data})")
-                    print(f"Crawl status: {status} (no data yet, continuing to wait...), waiting...")
+                    if total_pages > 0:
+                        print(f"Crawl status: {status} (API reports {total_pages} pages but no data yet, attempt {completed_without_data_count}/{max_completed_without_data})...")
+                    else:
+                        print(f"Crawl status: {status} (no data yet, attempt {completed_without_data_count}/{max_completed_without_data})...")
                     time.sleep(poll_interval)
                     continue
             elif status == "failed":
