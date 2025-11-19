@@ -108,7 +108,8 @@ class FirecrawlClient:
         url: str,
         formats: Optional[List[str]] = None,
         only_main_content: bool = True,
-        wait_for: Optional[int] = None
+        wait_for: Optional[int] = None,
+        timeout: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Scrape a single URL.
@@ -118,6 +119,7 @@ class FirecrawlClient:
             formats: List of output formats (e.g., ['markdown', 'html'])
             only_main_content: Extract only main content
             wait_for: Time to wait for page load (ms)
+            timeout: Server-side timeout in milliseconds (None = use API default)
             
         Returns:
             Scraped data from Firecrawl
@@ -133,20 +135,43 @@ class FirecrawlClient:
         if wait_for:
             payload["waitFor"] = wait_for
         
+        # Add server-side timeout if specified (in milliseconds)
+        # This tells the Firecrawl API server how long to wait before timing out
+        if timeout:
+            payload["timeout"] = timeout
+        
         logger.debug(f"Scraping URL: {url}")
         logger.debug(f"Payload: {payload}")
         
         # Retry on 408 errors with longer timeout
         max_retries = 3
         retry_delays = [2, 5, 10]
-        timeouts = [120, 150, 180]  # Increasing timeouts for retries (start with 120s which works)
+        client_timeouts = [120, 150, 180]  # Client-side timeouts for retries (start with 120s which works)
+        server_timeouts_ms = None  # Server-side timeouts in milliseconds
+        if timeout:
+            # If user specified timeout, use it and increase on retries
+            base_timeout_ms = timeout
+            server_timeouts_ms = [
+                base_timeout_ms,
+                int(base_timeout_ms * 1.5),  # 50% increase
+                int(base_timeout_ms * 2)     # 100% increase
+            ]
+        else:
+            # No user timeout specified - start with 90s (90000ms) and increase
+            server_timeouts_ms = [90000, 120000, 180000]  # 90s, 120s, 180s in milliseconds
         
         for attempt in range(max_retries):
             try:
-                current_timeout = timeouts[min(attempt, len(timeouts) - 1)]
-                logger.debug(f"Scrape attempt {attempt + 1}/{max_retries} with {current_timeout}s timeout")
-                print(f"  Attempt {attempt + 1}/{max_retries}: Using {current_timeout}s timeout...")
-                response = self.session.post(endpoint, json=payload, timeout=current_timeout)
+                current_client_timeout = client_timeouts[min(attempt, len(client_timeouts) - 1)]
+                current_server_timeout = server_timeouts_ms[min(attempt, len(server_timeouts_ms) - 1)]
+                
+                # Update payload with server-side timeout for this attempt
+                attempt_payload = payload.copy()
+                attempt_payload["timeout"] = current_server_timeout
+                
+                logger.debug(f"Scrape attempt {attempt + 1}/{max_retries} with client timeout {current_client_timeout}s and server timeout {current_server_timeout}ms")
+                print(f"  Attempt {attempt + 1}/{max_retries}: Client timeout {current_client_timeout}s, Server timeout {current_server_timeout//1000}s...")
+                response = self.session.post(endpoint, json=attempt_payload, timeout=current_client_timeout)
                 response.raise_for_status()
                 data = response.json()
                 logger.info(f"Successfully scraped: {url} on attempt {attempt + 1}")
@@ -160,15 +185,16 @@ class FirecrawlClient:
                 if status_code == 408:
                     if attempt < max_retries - 1:
                         next_attempt = attempt + 1
-                        next_timeout = timeouts[min(next_attempt, len(timeouts) - 1)]
+                        next_client_timeout = client_timeouts[min(next_attempt, len(client_timeouts) - 1)]
+                        next_server_timeout = server_timeouts_ms[min(next_attempt, len(server_timeouts_ms) - 1)]
                         delay = retry_delays[attempt]
                         logger.warning(
                             f"408 Request Timeout scraping {url} (attempt {attempt + 1}/{max_retries}). "
-                            f"Server timed out at {current_timeout}s. "
-                            f"Retrying attempt {next_attempt + 1} with {next_timeout}s timeout after {delay}s delay..."
+                            f"Server timed out at {current_server_timeout}ms. "
+                            f"Retrying attempt {next_attempt + 1} with {next_server_timeout}ms server timeout after {delay}s delay..."
                         )
                         print(f"⚠️  408 Request Timeout (attempt {attempt + 1}/{max_retries})")
-                        print(f"    Server timed out. Retrying in {delay}s with {next_timeout}s timeout...")
+                        print(f"    Server timed out at {current_server_timeout//1000}s. Retrying in {delay}s with {next_server_timeout//1000}s server timeout...")
                         time.sleep(delay)
                         continue
                     else:
@@ -185,19 +211,21 @@ class FirecrawlClient:
                         print(f"    2. Check Firecrawl server timeout configuration")
                         print(f"    3. Test URL directly: curl {url}")
                         print(f"    4. Try scraping a different, faster page")
+                        server_timeouts_str = ', '.join([f"{t//1000}s" for t in server_timeouts_ms])
                         raise FirecrawlTimeoutError(
                             f"Request timeout (408) scraping {url} after {max_retries} attempts. "
-                            f"Tried client timeouts: {', '.join(map(str, timeouts))}s\n"
+                            f"Tried server timeouts: {server_timeouts_str}\n"
                             f"\n⚠️  SERVER-SIDE TIMEOUT: The Firecrawl API server is timing out.\n"
-                            f"    The server has its own timeout (likely 60-90s) which we cannot control.\n"
-                            f"    Increasing client timeout won't help if server always times out.\n"
-                            f"\n💡 SOLUTION: Use CRAWL instead of SCRAPE for slow pages.\n"
-                            f"    Crawl is async and doesn't have the same timeout limitations.\n"
-                            f"    Example: python crawl_sections.py crawl <section>\n"
-                            f"\nOther options:\n"
-                            f"  - Check Firecrawl server timeout configuration\n"
-                            f"  - Test URL directly: curl {url}\n"
-                            f"  - Try a different, faster page"
+                            f"    We increased the server timeout from {server_timeouts_ms[0]//1000}s to {server_timeouts_ms[-1]//1000}s, but it still timed out.\n"
+                            f"\n💡 SOLUTIONS:\n"
+                            f"    1. Use CRAWL instead of SCRAPE (recommended):\n"
+                            f"       - Crawl is async and handles slow pages better\n"
+                            f"       - Example: python crawl_sections.py crawl <section>\n"
+                            f"    2. Increase timeout parameter (if page needs more time):\n"
+                            f"       - Try: timeout=240000 (4 minutes) or higher\n"
+                            f"    3. Check if page is actually accessible: curl {url}\n"
+                            f"    4. Try scraping a different, faster page\n"
+                            f"    5. Check Firecrawl server configuration for max timeout limits"
                         )
                 else:
                     # Other HTTP errors - don't retry
@@ -249,12 +277,13 @@ class FirecrawlClient:
             except requests.exceptions.Timeout as e:
                 if attempt < max_retries - 1:
                     delay = retry_delays[attempt]
-                    current_timeout = timeouts[min(attempt + 1, len(timeouts) - 1)]
+                    next_client_timeout = client_timeouts[min(attempt + 1, len(client_timeouts) - 1)]
+                    next_server_timeout = server_timeouts_ms[min(attempt + 1, len(server_timeouts_ms) - 1)]
                     logger.warning(
                         f"Connection timeout scraping {url} (attempt {attempt + 1}/{max_retries}). "
-                        f"Retrying with longer timeout ({current_timeout}s) in {delay}s..."
+                        f"Retrying with longer timeouts (client: {next_client_timeout}s, server: {next_server_timeout}ms) in {delay}s..."
                     )
-                    print(f"⚠️  Connection timeout - retrying with longer timeout... ({attempt + 1}/{max_retries})")
+                    print(f"⚠️  Connection timeout - retrying with longer timeouts... ({attempt + 1}/{max_retries})")
                     time.sleep(delay)
                     continue
                 else:
@@ -285,7 +314,8 @@ class FirecrawlClient:
         max_depth: int = 2,
         limit: int = 10,
         formats: Optional[List[str]] = None,
-        only_main_content: bool = True
+        only_main_content: bool = True,
+        timeout: Optional[int] = None
     ) -> str:
         """
         Crawl a website (multiple pages).
@@ -296,19 +326,27 @@ class FirecrawlClient:
             limit: Maximum number of pages to crawl
             formats: List of output formats
             only_main_content: Extract only main content
+            timeout: Per-page server-side timeout in milliseconds (None = use API default)
             
         Returns:
             Job ID for the crawl operation
         """
         endpoint = f"{self.config.api_url}/v1/crawl"
         
+        scrape_options = {
+            "formats": formats or ["markdown"],
+            "onlyMainContent": only_main_content
+        }
+        
+        # Add server-side timeout if specified (in milliseconds)
+        # This tells the Firecrawl API server how long to wait per page before timing out
+        if timeout:
+            scrape_options["timeout"] = timeout
+        
         payload = {
             "url": url,
             "limit": limit,
-            "scrapeOptions": {
-                "formats": formats or ["markdown"],
-                "onlyMainContent": only_main_content
-            },
+            "scrapeOptions": scrape_options,
             "maxDepth": max_depth
         }
         
